@@ -2,11 +2,12 @@ mod catalog;
 
 use catalog::{Catalog, CatalogError, Draft, Product, SqliteCatalog};
 use iced::widget::{button, column, row, scrollable, text, text_input};
-use iced::{Element, Task};
+use iced::{Element, Subscription, Task, keyboard};
 
 fn main() -> iced::Result {
     iced::application(App::boot, App::update, App::view)
         .title("Facturox")
+        .subscription(|_| App::subscription())
         .run()
 }
 
@@ -30,6 +31,8 @@ enum Screen {
 enum Message {
     Catalog,
     About,
+    FocusNext,
+    FocusPrevious,
     Name(String),
     Barcode(String),
     Price(String),
@@ -56,7 +59,26 @@ fn worker<T: Send + 'static>(
 fn service() -> Result<SqliteCatalog, CatalogError> {
     Ok(SqliteCatalog::at(SqliteCatalog::default_path()?))
 }
+fn focus_navigation(event: &keyboard::Event) -> Option<Message> {
+    match event {
+        keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Tab),
+            modifiers,
+            ..
+        } if !modifiers.control() && !modifiers.alt() && !modifiers.logo() => {
+            Some(if modifiers.shift() {
+                Message::FocusPrevious
+            } else {
+                Message::FocusNext
+            })
+        }
+        _ => None,
+    }
+}
 impl App {
+    fn subscription() -> Subscription<Message> {
+        keyboard::listen().filter_map(|event| focus_navigation(&event))
+    }
     fn boot() -> (Self, Task<Message>) {
         let mut app = Self::default();
         let task = app.load();
@@ -74,6 +96,8 @@ impl App {
         match message {
             Message::Catalog => self.screen = Screen::Catalog,
             Message::About => self.screen = Screen::About,
+            Message::FocusNext => return iced::widget::operation::focus_next(),
+            Message::FocusPrevious => return iced::widget::operation::focus_previous(),
             Message::Name(value) if !self.busy => self.draft.name = value,
             Message::Barcode(value) if !self.busy => self.draft.barcode = value,
             Message::Price(value) if !self.busy => self.draft.price = value,
