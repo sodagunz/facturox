@@ -5,7 +5,9 @@ use std::{
 };
 
 use directories::ProjectDirs;
-use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
+use rusqlite::{
+    Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Product {
@@ -13,6 +15,12 @@ pub struct Product {
     pub name: String,
     pub barcode: Option<String>,
     pub price_cents: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StockBalance {
+    pub product_id: i64,
+    pub quantity: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -57,7 +65,7 @@ impl SqliteCatalog {
             .ok_or_else(|| CatalogError::Storage("Could not find the user data directory.".into()))
     }
 
-    fn open(&self) -> Result<Connection, CatalogError> {
+    pub(crate) fn open(&self) -> Result<Connection, CatalogError> {
         let parent = self
             .path
             .parent()
@@ -71,7 +79,7 @@ impl SqliteCatalog {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(storage)?;
-        if version > 1 {
+        if version > 2 {
             return Err(CatalogError::Storage(format!(
                 "Unsupported catalog schema version {version}."
             )));
@@ -80,16 +88,95 @@ impl SqliteCatalog {
             .map_err(storage)?;
         conn.pragma_update(None, "synchronous", "FULL")
             .map_err(storage)?;
-        if version == 0 {
-            let tx = conn.transaction().map_err(storage)?;
-            tx.execute_batch("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 200), barcode TEXT UNIQUE CHECK(barcode IS NULL OR length(barcode) BETWEEN 1 AND 100), price_cents INTEGER NOT NULL CHECK(price_cents >= 0)); PRAGMA user_version = 1;").map_err(storage)?;
+        if version < 2 {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            // Another connection may have migrated while this one waited for the lock.
+            let current: i64 = tx
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .map_err(storage)?;
+            if current > 2 {
+                return Err(CatalogError::Storage(format!(
+                    "Unsupported catalog schema version {current}."
+                )));
+            }
+            if current == 0 {
+                tx.execute_batch("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 200), barcode TEXT UNIQUE CHECK(barcode IS NULL OR length(barcode) BETWEEN 1 AND 100), price_cents INTEGER NOT NULL CHECK(price_cents >= 0)); PRAGMA user_version = 1;").map_err(storage)?;
+            }
+            if current <= 1 {
+                tx.execute_batch("CREATE TABLE stock_movements (id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL REFERENCES products(id), delta INTEGER NOT NULL CHECK(delta <> 0), reason TEXT NOT NULL CHECK(length(trim(reason)) > 0), order_id INTEGER, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))); CREATE INDEX stock_movements_product ON stock_movements(product_id); PRAGMA user_version = 2;").map_err(storage)?;
+            }
             tx.commit().map_err(storage)?;
         }
         Ok(conn)
     }
+
+    /// Lists every product's available quantity, including products with no movements.
+    pub fn list_stock(&self) -> Result<Vec<StockBalance>, CatalogError> {
+        let conn = self.open()?;
+        let mut statement = conn.prepare("SELECT p.id, COALESCE(SUM(m.delta), 0) FROM products p LEFT JOIN stock_movements m ON m.product_id = p.id GROUP BY p.id ORDER BY p.id").map_err(storage)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(StockBalance {
+                    product_id: row.get(0)?,
+                    quantity: row.get(1)?,
+                })
+            })
+            .map_err(storage)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(storage)
+    }
+
+    /// Records a manual adjustment atomically and returns the new available quantity.
+    pub fn adjust_stock(
+        &self,
+        product_id: i64,
+        delta: i64,
+        reason: &str,
+    ) -> Result<i64, CatalogError> {
+        let mut conn = self.open()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let quantity = insert_stock_movement(&tx, product_id, delta, reason, None)?;
+        tx.commit().map_err(storage)?;
+        Ok(quantity)
+    }
 }
-fn storage(error: impl fmt::Display) -> CatalogError {
+pub(crate) fn storage(error: impl fmt::Display) -> CatalogError {
     CatalogError::Storage(format!("Catalog storage error: {error}"))
+}
+
+/// Applies a signed stock movement inside the caller's transaction.
+/// The transaction must hold the SQLite write lock before reading the balance.
+pub(crate) fn insert_stock_movement(
+    tx: &Transaction<'_>,
+    product_id: i64,
+    delta: i64,
+    reason: &str,
+    order_id: Option<i64>,
+) -> Result<i64, CatalogError> {
+    let reason = reason.trim();
+    if delta == 0 || reason.is_empty() {
+        return Err(CatalogError::Validation(
+            "A nonzero quantity and reason are required.".into(),
+        ));
+    }
+    let current: Option<i64> = tx.query_row("SELECT COALESCE((SELECT SUM(delta) FROM stock_movements WHERE product_id = p.id), 0) FROM products p WHERE p.id = ?1", [product_id], |row| row.get(0)).optional().map_err(storage)?;
+    let current =
+        current.ok_or_else(|| CatalogError::Validation("Product does not exist.".into()))?;
+    let next = current
+        .checked_add(delta)
+        .filter(|value| *value >= 0)
+        .ok_or_else(|| {
+            CatalogError::Validation("Stock quantity would be negative or too large.".into())
+        })?;
+    tx.execute(
+        "INSERT INTO stock_movements (product_id, delta, reason, order_id) VALUES (?1, ?2, ?3, ?4)",
+        params![product_id, delta, reason, order_id],
+    )
+    .map_err(storage)?;
+    Ok(next)
 }
 
 fn validate(draft: &Draft) -> Result<(String, Option<String>, i64), CatalogError> {
@@ -192,6 +279,62 @@ impl Catalog for SqliteCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn migrates_existing_catalog_and_tracks_checked_adjustments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.sqlite3");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, barcode TEXT UNIQUE, price_cents INTEGER NOT NULL); INSERT INTO products VALUES (1, 'Tea', NULL, 200); PRAGMA user_version = 1;").unwrap();
+        drop(conn);
+
+        let service = SqliteCatalog::at(&path);
+        assert_eq!(
+            service.list_stock().unwrap(),
+            vec![StockBalance {
+                product_id: 1,
+                quantity: 0
+            }]
+        );
+        assert_eq!(service.adjust_stock(1, 5, "received").unwrap(), 5);
+        assert_eq!(service.adjust_stock(1, -2, "damaged").unwrap(), 3);
+        assert!(service.adjust_stock(1, -4, "too many").is_err());
+        assert!(service.adjust_stock(1, 0, "count").is_err());
+        assert!(service.adjust_stock(1, 1, " ").is_err());
+        assert!(service.adjust_stock(999, 1, "missing").is_err());
+        assert_eq!(
+            SqliteCatalog::at(&path).list_stock().unwrap()[0].quantity,
+            3
+        );
+        let conn = Connection::open(path).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM stock_movements", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn stock_changes_roll_back_with_their_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = SqliteCatalog::at(dir.path().join("catalog.sqlite3"));
+        let product = service
+            .add(Draft {
+                name: "Coffee".into(),
+                barcode: String::new(),
+                price: "1".into(),
+            })
+            .unwrap();
+        service.adjust_stock(product.id, 3, "received").unwrap();
+        let mut conn = service.open().unwrap();
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        assert_eq!(
+            insert_stock_movement(&tx, product.id, -2, "reservation", Some(7)).unwrap(),
+            1
+        );
+        drop(tx);
+        assert_eq!(service.list_stock().unwrap()[0].quantity, 3);
+    }
     #[test]
     fn catalog_survives_reopen_and_rejects_duplicates_and_invalid_input() {
         let dir = tempfile::tempdir().unwrap();

@@ -1,6 +1,6 @@
 mod catalog;
 
-use catalog::{Catalog, CatalogError, Draft, Product, SqliteCatalog};
+use catalog::{Catalog, CatalogError, Draft, Product, SqliteCatalog, StockBalance};
 use iced::widget::{button, column, row, scrollable, text, text_input};
 use iced::{Element, Subscription, Task, keyboard};
 
@@ -16,6 +16,10 @@ struct App {
     screen: Screen,
     draft: Draft,
     products: Vec<Product>,
+    stock: Vec<StockBalance>,
+    selected_stock: Option<i64>,
+    stock_delta: String,
+    stock_reason: String,
     busy: bool,
     request: u64,
     error: Option<String>,
@@ -38,7 +42,12 @@ enum Message {
     Price(String),
     Submit,
     Refresh,
-    Loaded(u64, Result<Vec<Product>, CatalogError>),
+    SelectStock(i64),
+    StockDelta(String),
+    StockReason(String),
+    AdjustStock,
+    StockAdjusted(u64, Result<i64, CatalogError>),
+    Loaded(u64, Result<(Vec<Product>, Vec<StockBalance>), CatalogError>),
     Added(u64, Result<Product, CatalogError>),
 }
 fn worker<T: Send + 'static>(
@@ -88,9 +97,13 @@ impl App {
         self.busy = true;
         self.request = self.request.wrapping_add(1);
         let id = self.request;
-        Task::perform(worker(|| service()?.list()), move |result| {
-            Message::Loaded(id, result)
-        })
+        Task::perform(
+            worker(|| {
+                let service = service()?;
+                Ok((service.list()?, service.list_stock()?))
+            }),
+            move |result| Message::Loaded(id, result),
+        )
     }
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
@@ -112,6 +125,40 @@ impl App {
                     Message::Added(id, result)
                 });
             }
+            Message::SelectStock(id) if !self.busy => self.selected_stock = Some(id),
+            Message::StockDelta(value) if !self.busy => self.stock_delta = value,
+            Message::StockReason(value) if !self.busy => self.stock_reason = value,
+            Message::AdjustStock if !self.busy => {
+                let Some(id) = self.selected_stock else {
+                    self.error = Some("Select a product to adjust.".into());
+                    return Task::none();
+                };
+                let Ok(delta) = self.stock_delta.trim().parse::<i64>() else {
+                    self.error = Some("Enter a whole-unit adjustment.".into());
+                    return Task::none();
+                };
+                self.busy = true;
+                self.error = None;
+                self.request = self.request.wrapping_add(1);
+                let request = self.request;
+                let reason = self.stock_reason.clone();
+                return Task::perform(
+                    worker(move || service()?.adjust_stock(id, delta, &reason)),
+                    move |result| Message::StockAdjusted(request, result),
+                );
+            }
+            Message::StockAdjusted(id, result) if self.busy && id == self.request => {
+                self.busy = false;
+                match result {
+                    Ok(_) => {
+                        self.stock_delta.clear();
+                        self.stock_reason.clear();
+                        self.notice = Some("Stock adjusted.".into());
+                        return self.load();
+                    }
+                    Err(error) => self.error = Some(error.to_string()),
+                }
+            }
             Message::Refresh if !self.busy => {
                 self.error = None;
                 return self.load();
@@ -119,8 +166,9 @@ impl App {
             Message::Loaded(id, result) if self.busy && id == self.request => {
                 self.busy = false;
                 match result {
-                    Ok(products) => {
+                    Ok((products, stock)) => {
                         self.products = products;
+                        self.stock = stock;
                         self.error = None;
                     }
                     Err(error) => self.error = Some(error.to_string()),
@@ -130,6 +178,10 @@ impl App {
                 self.busy = false;
                 match result {
                     Ok(product) => {
+                        self.stock.push(StockBalance {
+                            product_id: product.id,
+                            quantity: 0,
+                        });
                         self.products.push(product);
                         self.draft = Draft::default();
                         self.notice = Some("Product saved.".into());
@@ -175,7 +227,42 @@ impl App {
                 if let Some(notice) = &self.notice {
                     content = content.push(text(notice));
                 }
+                content = content.push(text(format!(
+                    "Adjust stock for product: {}",
+                    self.selected_stock.map_or_else(
+                        || "none selected".to_owned(),
+                        |id| self
+                            .products
+                            .iter()
+                            .find(|p| p.id == id)
+                            .map_or_else(|| id.to_string(), |p| p.name.clone())
+                    )
+                )));
+                let mut adjust = button("Apply adjustment");
+                if !self.busy {
+                    adjust = adjust.on_press(Message::AdjustStock);
+                }
+                content = content.push(
+                    text_input("Change in units, e.g. 5 or -2", &self.stock_delta)
+                        .on_input(Message::StockDelta),
+                );
+                content = content.push(
+                    text_input("Reason for adjustment", &self.stock_reason)
+                        .on_input(Message::StockReason),
+                );
+                content = content.push(adjust);
                 for product in &self.products {
+                    let quantity = self
+                        .stock
+                        .iter()
+                        .find(|b| b.product_id == product.id)
+                        .map_or(0, |b| b.quantity);
+                    let mut select = button("Adjust");
+                    if !self.busy {
+                        select = select.on_press(Message::SelectStock(product.id));
+                    }
+                    content = content
+                        .push(row![select, text(format!("Available: {quantity}"))].spacing(8));
                     content = content.push(text(format!(
                         "{} — ${}.{:02}{}",
                         product.name,
