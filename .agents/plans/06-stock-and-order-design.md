@@ -22,4 +22,4 @@ Implement whole-unit inventory and one durable open order for the single shop co
 
 ## Completion evidence
 
-Pending. A plan moves to `.agents/plans/done` only after all criteria and required validation pass.
+Linux: formatting, pedantic Clippy and 19 tests pass, including migration, concurrent reservations, replay, injected rollback and child-process termination around reservation commit. An isolated X11 GUI flow created a product, adjusted stock, added it to an order, cancelled and confirmed stock restoration, then created and closed another order and confirmed the remaining stock. Windows and macOS builds and GUI checks, actual disk-full behavior, backup/restore and production fiscal readiness remain unverified. The plan remains open until required validation passes.
