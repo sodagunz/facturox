@@ -226,7 +226,6 @@ enum Screen {
     #[default]
     Catalog,
     Orders,
-    History,
     About,
     Settings,
 }
@@ -266,7 +265,6 @@ struct Snapshot {
 enum Message {
     Catalog,
     Orders,
-    History,
     About,
     Settings,
     ToggleTheme,
@@ -532,7 +530,6 @@ impl App {
         match message {
             Message::Catalog => self.screen = Screen::Catalog,
             Message::Orders => self.screen = Screen::Orders,
-            Message::History => self.screen = Screen::History,
             Message::About => self.screen = Screen::About,
             Message::Settings => self.screen = Screen::Settings,
             Message::CompanyName(value) if !self.busy => self.company.business_name = value,
@@ -692,7 +689,7 @@ impl App {
             let mut close = button("Close order")
                 .padding([11, 18])
                 .style(primary_button);
-            let mut cancel = button("Cancel order")
+            let mut cancel = button("Discard order")
                 .padding([11, 18])
                 .style(secondary_button);
             if self.can_modify() {
@@ -871,12 +868,6 @@ impl App {
             if !self.busy {
                 select = select.on_press(Message::SelectStock(product.id));
             }
-            let mut add = button("Add to order")
-                .padding([8, 12])
-                .style(primary_button);
-            if self.can_modify() && quantity > 0 {
-                add = add.on_press(Message::OrderAction(OrderAction::Add(product.id)));
-            }
             let info = column![
                 text(&product.name).size(16),
                 text(subtitle).size(13).color(self.muted())
@@ -884,14 +875,10 @@ impl App {
             .spacing(4)
             .width(Fill);
             listing = listing.push(
-                container(
-                    row![info, select, add]
-                        .spacing(8)
-                        .align_y(Alignment::Center),
-                )
-                .width(Fill)
-                .padding(14)
-                .style(inset_style),
+                container(row![info, select].spacing(8).align_y(Alignment::Center))
+                    .width(Fill)
+                    .padding(14)
+                    .style(inset_style),
             );
         }
         let forms = row![
@@ -920,6 +907,99 @@ impl App {
         .spacing(18)
         .max_width(1120);
         scrollable(content).height(Fill).into()
+    }
+
+    fn view_items(&self) -> Element<'_, Message> {
+        let mut items = column![text("Existing items").size(20)].spacing(12);
+        if self.products.is_empty() {
+            items = items.push(
+                text("No items yet. Add products in Manage inventory.")
+                    .size(14)
+                    .color(self.muted()),
+            );
+        }
+        for product in &self.products {
+            let quantity = self
+                .stock
+                .iter()
+                .find(|stock| stock.product_id == product.id)
+                .map_or(0, |stock| stock.quantity);
+            let mut add = button("Add").padding([8, 12]).style(primary_button);
+            if self.can_modify() && quantity > 0 {
+                add = add.on_press(Message::OrderAction(OrderAction::Add(product.id)));
+            }
+            let info = column![
+                text(&product.name).size(16),
+                text(format!(
+                    "${}.{:02} · {} available",
+                    product.price_cents / 100,
+                    product.price_cents % 100,
+                    quantity
+                ))
+                .size(13)
+                .color(self.muted())
+            ]
+            .spacing(4)
+            .width(Fill);
+            items = items.push(
+                container(row![info, add].spacing(8).align_y(Alignment::Center))
+                    .padding(12)
+                    .width(Fill)
+                    .style(inset_style),
+            );
+        }
+        scrollable(items).height(Fill).into()
+    }
+
+    fn view_sales(&self) -> Element<'_, Message> {
+        iced::widget::responsive(move |size| {
+            if size.width < 850.0 {
+                scrollable(
+                    column![
+                        container(self.view_items())
+                            .width(Fill)
+                            .height(320)
+                            .padding(16)
+                            .style(card_style),
+                        container(self.view_order())
+                            .width(Fill)
+                            .height(400)
+                            .padding(16)
+                            .style(card_style),
+                        container(self.view_history())
+                            .width(Fill)
+                            .height(320)
+                            .padding(16)
+                            .style(card_style)
+                    ]
+                    .spacing(12),
+                )
+                .height(Fill)
+                .into()
+            } else {
+                row![
+                    container(self.view_items())
+                        .width(Fill)
+                        .height(Fill)
+                        .padding(16)
+                        .style(card_style),
+                    container(self.view_order())
+                        .width(Fill)
+                        .height(Fill)
+                        .padding(16)
+                        .style(card_style),
+                    container(self.view_history())
+                        .width(Fill)
+                        .height(Fill)
+                        .padding(16)
+                        .style(card_style)
+                ]
+                .spacing(12)
+                .height(Fill)
+                .into()
+            }
+        })
+        .into()
     }
 
     fn view_settings(&self) -> Element<'_, Message> {
@@ -981,14 +1061,9 @@ impl App {
                 matches!(self.screen, Screen::Catalog)
             ),
             tab(
-                "Open order",
+                "Manage inventory",
                 Message::Orders,
                 matches!(self.screen, Screen::Orders)
-            ),
-            tab(
-                "Order log",
-                Message::History,
-                matches!(self.screen, Screen::History)
             ),
             tab(
                 "About",
@@ -1027,9 +1102,8 @@ impl App {
             .style(card_style)
             .into(),
             Screen::Settings => self.view_settings(),
-            Screen::Orders => self.view_order(),
-            Screen::History => self.view_history(),
-            Screen::Catalog => self.view_catalog(),
+            Screen::Orders => self.view_catalog(),
+            Screen::Catalog => self.view_sales(),
         };
         let header = row![
             brand,
