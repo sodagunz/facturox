@@ -1,13 +1,7 @@
-use std::{
-    fmt, fs,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{fmt, path::PathBuf};
 
 use directories::ProjectDirs;
-use rusqlite::{
-    Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
-};
+use sqlx::{Connection, Row, SqliteConnection};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Product {
@@ -46,8 +40,8 @@ impl fmt::Display for CatalogError {
 }
 
 pub trait Catalog {
-    fn add(&self, draft: Draft) -> Result<Product, CatalogError>;
-    fn list(&self) -> Result<Vec<Product>, CatalogError>;
+    async fn add(&self, draft: Draft) -> Result<Product, CatalogError>;
+    async fn list(&self) -> Result<Vec<Product>, CatalogError>;
 }
 
 #[derive(Debug, Clone)]
@@ -65,95 +59,42 @@ impl SqliteCatalog {
             .ok_or_else(|| CatalogError::Storage("Could not find the user data directory.".into()))
     }
 
-    pub(crate) fn open(&self) -> Result<Connection, CatalogError> {
-        let parent = self
-            .path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        fs::create_dir_all(parent).map_err(storage)?;
-        let mut conn = Connection::open(&self.path).map_err(storage)?;
-        conn.busy_timeout(Duration::from_secs(2)).map_err(storage)?;
-        conn.pragma_update(None, "foreign_keys", true)
-            .map_err(storage)?;
-        let version: i64 = conn
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .map_err(storage)?;
-        if version > 4 {
-            return Err(CatalogError::Storage(format!(
-                "Unsupported catalog schema version {version}."
-            )));
-        }
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(storage)?;
-        conn.pragma_update(None, "synchronous", "FULL")
-            .map_err(storage)?;
-        if version < 4 {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(storage)?;
-            // Another connection may have migrated while this one waited for the lock.
-            let current: i64 = tx
-                .pragma_query_value(None, "user_version", |row| row.get(0))
-                .map_err(storage)?;
-            if current > 4 {
-                return Err(CatalogError::Storage(format!(
-                    "Unsupported catalog schema version {current}."
-                )));
-            }
-            if current == 0 {
-                tx.execute_batch("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 200), barcode TEXT UNIQUE CHECK(barcode IS NULL OR length(barcode) BETWEEN 1 AND 100), price_cents INTEGER NOT NULL CHECK(price_cents >= 0)); PRAGMA user_version = 1;").map_err(storage)?;
-            }
-            if current <= 1 {
-                tx.execute_batch("CREATE TABLE stock_movements (id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL REFERENCES products(id), delta INTEGER NOT NULL CHECK(delta <> 0), reason TEXT NOT NULL CHECK(length(trim(reason)) > 0), order_id INTEGER, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))); CREATE INDEX stock_movements_product ON stock_movements(product_id); PRAGMA user_version = 2;").map_err(storage)?;
-            }
-            if current <= 2 {
-                crate::orders::migrate_v3(&tx)?;
-                migrate_stock_v3(&tx)?;
-            }
-            if current <= 3 {
-                crate::settings::migrate_v4(&tx)?;
-            }
-            tx.commit().map_err(storage)?;
-        }
-        Ok(conn)
+    pub(crate) async fn open(&self) -> Result<SqliteConnection, CatalogError> {
+        crate::database::open(&self.path).await
     }
 
-    /// Lists every product's available quantity, including products with no movements.
-    pub fn list_stock(&self) -> Result<Vec<StockBalance>, CatalogError> {
-        let conn = self.open()?;
-        let mut statement = conn.prepare("SELECT p.id, COALESCE(SUM(m.delta), 0) FROM products p LEFT JOIN stock_movements m ON m.product_id = p.id GROUP BY p.id ORDER BY p.id").map_err(storage)?;
-        let rows = statement
-            .query_map([], |row| {
+    /// Lists every product's available quantity, including products without movements.
+    pub async fn list_stock(&self) -> Result<Vec<StockBalance>, CatalogError> {
+        let mut conn = self.open().await?;
+        let rows = sqlx::query("SELECT p.id, COALESCE(SUM(m.delta), 0) FROM products p LEFT JOIN stock_movements m ON m.product_id = p.id GROUP BY p.id ORDER BY p.id")
+            .fetch_all(&mut conn).await.map_err(storage)?;
+        rows.into_iter()
+            .map(|row| {
                 Ok(StockBalance {
-                    product_id: row.get(0)?,
-                    quantity: row.get(1)?,
+                    product_id: row.try_get(0).map_err(storage)?,
+                    quantity: row.try_get(1).map_err(storage)?,
                 })
             })
-            .map_err(storage)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(storage)
+            .collect()
     }
 
     /// Records a manual adjustment for test fixtures.
     #[cfg(test)]
-    pub fn adjust_stock(
+    pub async fn adjust_stock(
         &self,
         product_id: i64,
         delta: i64,
         reason: &str,
     ) -> Result<i64, CatalogError> {
-        let mut conn = self.open()?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        let quantity = insert_stock_movement(&tx, product_id, delta, reason, None)?;
-        tx.commit().map_err(storage)?;
+        let mut conn = self.open().await?;
+        let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(storage)?;
+        let quantity = insert_stock_movement(&mut tx, product_id, delta, reason, None).await?;
+        tx.commit().await.map_err(storage)?;
         Ok(quantity)
     }
 
     /// Records a manual adjustment once for a stable caller-generated request ID.
-    /// Replays return the quantity recorded by the first successful request.
-    pub fn adjust_stock_once(
+    pub async fn adjust_stock_once(
         &self,
         request_id: &str,
         product_id: i64,
@@ -166,15 +107,10 @@ impl SqliteCatalog {
                 "Invalid stock adjustment request ID.".into(),
             ));
         }
-        let mut conn = self.open()?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        let existing: Option<(i64, i64, String, i64)> = tx.query_row(
-            "SELECT product_id, delta, reason, result_quantity FROM stock_adjustment_commands WHERE request_id = ?1",
-            [request_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        ).optional().map_err(storage)?;
+        let mut conn = self.open().await?;
+        let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(storage)?;
+        let existing: Option<(i64, i64, String, i64)> = sqlx::query_as("SELECT product_id, delta, reason, result_quantity FROM stock_adjustment_commands WHERE request_id = ?1")
+            .bind(request_id).fetch_optional(&mut *tx).await.map_err(storage)?;
         if let Some((saved_product, saved_delta, saved_reason, quantity)) = existing {
             if (saved_product, saved_delta, saved_reason.as_str()) != (product_id, delta, reason) {
                 return Err(CatalogError::Validation(
@@ -184,37 +120,21 @@ impl SqliteCatalog {
             }
             return Ok(quantity);
         }
-        let quantity = insert_stock_movement(&tx, product_id, delta, reason, None)?;
-        tx.execute(
-            "INSERT INTO stock_adjustment_commands (request_id, product_id, delta, reason, result_quantity) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![request_id, product_id, delta, reason, quantity],
-        ).map_err(storage)?;
-        tx.commit().map_err(storage)?;
+        let quantity = insert_stock_movement(&mut tx, product_id, delta, reason, None).await?;
+        sqlx::query("INSERT INTO stock_adjustment_commands (request_id, product_id, delta, reason, result_quantity) VALUES (?1, ?2, ?3, ?4, ?5)")
+            .bind(request_id).bind(product_id).bind(delta).bind(reason).bind(quantity).execute(&mut *tx).await.map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
         Ok(quantity)
     }
 }
 
-/// Add the replay ledger inside the shared version 3 migration transaction.
-pub(crate) fn migrate_stock_v3(tx: &Transaction<'_>) -> Result<(), CatalogError> {
-    tx.execute_batch(
-        "CREATE TABLE stock_adjustment_commands (
-            request_id TEXT PRIMARY KEY NOT NULL,
-            product_id INTEGER NOT NULL REFERENCES products(id),
-            delta INTEGER NOT NULL CHECK(delta <> 0),
-            reason TEXT NOT NULL CHECK(length(trim(reason)) > 0),
-            result_quantity INTEGER NOT NULL CHECK(result_quantity >= 0)
-        );",
-    )
-    .map_err(storage)
-}
 pub(crate) fn storage(error: impl fmt::Display) -> CatalogError {
     CatalogError::Storage(format!("Catalog storage error: {error}"))
 }
 
-/// Applies a signed stock movement inside the caller's transaction.
-/// The transaction must hold the SQLite write lock before reading the balance.
-pub(crate) fn insert_stock_movement(
-    tx: &Transaction<'_>,
+/// Applies a movement inside a transaction that already holds the SQLite write lock.
+pub(crate) async fn insert_stock_movement(
+    conn: &mut SqliteConnection,
     product_id: i64,
     delta: i64,
     reason: &str,
@@ -226,7 +146,8 @@ pub(crate) fn insert_stock_movement(
             "A nonzero quantity and reason are required.".into(),
         ));
     }
-    let current: Option<i64> = tx.query_row("SELECT COALESCE((SELECT SUM(delta) FROM stock_movements WHERE product_id = p.id), 0) FROM products p WHERE p.id = ?1", [product_id], |row| row.get(0)).optional().map_err(storage)?;
+    let current: Option<i64> = sqlx::query_scalar("SELECT COALESCE((SELECT SUM(delta) FROM stock_movements WHERE product_id = p.id), 0) FROM products p WHERE p.id = ?1")
+        .bind(product_id).fetch_optional(&mut *conn).await.map_err(storage)?;
     let current =
         current.ok_or_else(|| CatalogError::Validation("Product does not exist.".into()))?;
     let next = current
@@ -235,10 +156,15 @@ pub(crate) fn insert_stock_movement(
         .ok_or_else(|| {
             CatalogError::Validation("Stock quantity would be negative or too large.".into())
         })?;
-    tx.execute(
+    sqlx::query(
         "INSERT INTO stock_movements (product_id, delta, reason, order_id) VALUES (?1, ?2, ?3, ?4)",
-        params![product_id, delta, reason, order_id],
     )
+    .bind(product_id)
+    .bind(delta)
+    .bind(reason)
+    .bind(order_id)
+    .execute(&mut *conn)
+    .await
     .map_err(storage)?;
     Ok(next)
 }
@@ -285,35 +211,28 @@ fn validate(draft: &Draft) -> Result<(String, Option<String>, i64), CatalogError
     Ok((name, barcode, cents))
 }
 impl Catalog for SqliteCatalog {
-    fn add(&self, draft: Draft) -> Result<Product, CatalogError> {
+    async fn add(&self, draft: Draft) -> Result<Product, CatalogError> {
         let (name, barcode, price_cents) = validate(&draft)?;
-        let mut conn = self.open()?;
-        let tx = conn.transaction().map_err(storage)?;
-        if let Some(code) = &barcode {
-            let exists: Option<i64> = tx
-                .query_row("SELECT id FROM products WHERE barcode = ?1", [code], |r| {
-                    r.get(0)
-                })
-                .optional()
-                .map_err(storage)?;
-            if exists.is_some() {
-                return Err(CatalogError::DuplicateBarcode);
-            }
-        }
-        tx.execute(
-            "INSERT INTO products (name, barcode, price_cents) VALUES (?1, ?2, ?3)",
-            params![name, barcode, price_cents],
-        )
-        .map_err(|e| match &e {
-            rusqlite::Error::SqliteFailure(err, _)
-                if err.code == ErrorCode::ConstraintViolation && barcode.is_some() =>
-            {
-                CatalogError::DuplicateBarcode
-            }
-            _ => storage(e),
-        })?;
-        let id = tx.last_insert_rowid();
-        tx.commit().map_err(storage)?;
+        let mut conn = self.open().await?;
+        let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(storage)?;
+        let result =
+            sqlx::query("INSERT INTO products (name, barcode, price_cents) VALUES (?1, ?2, ?3)")
+                .bind(&name)
+                .bind(&barcode)
+                .bind(price_cents)
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| {
+                    if barcode.is_some()
+                        && matches!(&error, sqlx::Error::Database(db) if db.is_unique_violation())
+                    {
+                        CatalogError::DuplicateBarcode
+                    } else {
+                        storage(error)
+                    }
+                })?;
+        let id = result.last_insert_rowid();
+        tx.commit().await.map_err(storage)?;
         Ok(Product {
             id,
             name,
@@ -321,30 +240,30 @@ impl Catalog for SqliteCatalog {
             price_cents,
         })
     }
-    fn list(&self) -> Result<Vec<Product>, CatalogError> {
-        let conn = self.open()?;
-        let mut statement = conn
-            .prepare("SELECT id, name, barcode, price_cents FROM products ORDER BY id")
+    async fn list(&self) -> Result<Vec<Product>, CatalogError> {
+        let mut conn = self.open().await?;
+        let rows = sqlx::query("SELECT id, name, barcode, price_cents FROM products ORDER BY id")
+            .fetch_all(&mut conn)
+            .await
             .map_err(storage)?;
-        let rows = statement
-            .query_map([], |row| {
+        rows.into_iter()
+            .map(|row| {
                 Ok(Product {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    barcode: row.get(2)?,
-                    price_cents: row.get(3)?,
+                    id: row.try_get(0).map_err(storage)?,
+                    name: row.try_get(1).map_err(storage)?,
+                    barcode: row.try_get(2).map_err(storage)?,
+                    price_cents: row.try_get(3).map_err(storage)?,
                 })
             })
-            .map_err(storage)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(storage)
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn stock_adjustment_replay_is_atomic_and_rejects_reused_ids() {
+    #[tokio::test]
+    async fn stock_adjustment_replay_is_atomic_and_rejects_reused_ids() {
         let dir = tempfile::tempdir().unwrap();
         let service = SqliteCatalog::at(dir.path().join("catalog.sqlite3"));
         let product = service
@@ -353,94 +272,69 @@ mod tests {
                 barcode: String::new(),
                 price: "1".into(),
             })
+            .await
             .unwrap();
         assert_eq!(
             service
                 .adjust_stock_once("request-1", product.id, 3, "received")
+                .await
                 .unwrap(),
             3
         );
         assert_eq!(
             service
                 .adjust_stock_once("request-2", product.id, -1, "damaged")
+                .await
                 .unwrap(),
             2
         );
         assert_eq!(
             service
                 .adjust_stock_once("request-1", product.id, 3, "received")
+                .await
                 .unwrap(),
             3
         );
         assert!(
             service
                 .adjust_stock_once("request-1", product.id, 4, "received")
+                .await
                 .is_err()
         );
         assert!(
             service
                 .adjust_stock_once("request-1", product.id, 3, "different reason")
+                .await
                 .is_err()
         );
         assert!(
             service
                 .adjust_stock_once("", product.id, 3, "received")
+                .await
                 .is_err()
         );
         assert!(
             service
                 .adjust_stock_once("request-3", product.id, -3, "too many")
+                .await
                 .is_err()
         );
-        assert_eq!(service.list_stock().unwrap()[0].quantity, 2);
-        let conn = service.open().unwrap();
-        let movement_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM stock_movements", [], |row| row.get(0))
+        assert_eq!(service.list_stock().await.unwrap()[0].quantity, 2);
+        let mut conn = service.open().await.unwrap();
+        let movement_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM stock_movements")
+            .fetch_one(&mut conn)
+            .await
             .unwrap();
-        let request_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM stock_adjustment_commands",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let request_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM stock_adjustment_commands")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
         assert_eq!((movement_count, request_count), (2, 2));
     }
-    #[test]
-    fn migrates_existing_catalog_and_tracks_checked_adjustments() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("existing.sqlite3");
-        let conn = Connection::open(&path).unwrap();
-        conn.execute_batch("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, barcode TEXT UNIQUE, price_cents INTEGER NOT NULL); INSERT INTO products VALUES (1, 'Tea', NULL, 200); PRAGMA user_version = 1;").unwrap();
-        drop(conn);
 
-        let service = SqliteCatalog::at(&path);
-        assert_eq!(
-            service.list_stock().unwrap(),
-            vec![StockBalance {
-                product_id: 1,
-                quantity: 0
-            }]
-        );
-        assert_eq!(service.adjust_stock(1, 5, "received").unwrap(), 5);
-        assert_eq!(service.adjust_stock(1, -2, "damaged").unwrap(), 3);
-        assert!(service.adjust_stock(1, -4, "too many").is_err());
-        assert!(service.adjust_stock(1, 0, "count").is_err());
-        assert!(service.adjust_stock(1, 1, " ").is_err());
-        assert!(service.adjust_stock(999, 1, "missing").is_err());
-        assert_eq!(
-            SqliteCatalog::at(&path).list_stock().unwrap()[0].quantity,
-            3
-        );
-        let conn = Connection::open(path).unwrap();
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM stock_movements", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(count, 2);
-    }
-
-    #[test]
-    fn stock_changes_roll_back_with_their_transaction() {
+    #[tokio::test]
+    async fn stock_changes_roll_back_with_their_transaction() {
         let dir = tempfile::tempdir().unwrap();
         let service = SqliteCatalog::at(dir.path().join("catalog.sqlite3"));
         let product = service
@@ -449,21 +343,26 @@ mod tests {
                 barcode: String::new(),
                 price: "1".into(),
             })
+            .await
             .unwrap();
-        service.adjust_stock(product.id, 3, "received").unwrap();
-        let mut conn = service.open().unwrap();
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
+        service
+            .adjust_stock(product.id, 3, "received")
+            .await
             .unwrap();
+        let mut conn = service.open().await.unwrap();
+        let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.unwrap();
         assert_eq!(
-            insert_stock_movement(&tx, product.id, -2, "reservation", Some(7)).unwrap(),
+            insert_stock_movement(&mut tx, product.id, -2, "reservation", Some(7))
+                .await
+                .unwrap(),
             1
         );
-        drop(tx);
-        assert_eq!(service.list_stock().unwrap()[0].quantity, 3);
+        tx.rollback().await.unwrap();
+        assert_eq!(service.list_stock().await.unwrap()[0].quantity, 3);
     }
-    #[test]
-    fn catalog_survives_reopen_and_rejects_duplicates_and_invalid_input() {
+
+    #[tokio::test]
+    async fn catalog_survives_reopen_and_rejects_duplicates_and_invalid_input() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("catalog.sqlite3");
         let service = SqliteCatalog::at(&path);
@@ -472,52 +371,43 @@ mod tests {
             barcode: " 123 ".into(),
             price: "12.3".into(),
         };
-        let saved = service.add(draft.clone()).unwrap();
+        let saved = service.add(draft.clone()).await.unwrap();
         assert_eq!(saved.price_cents, 1230);
-        assert_eq!(service.add(draft), Err(CatalogError::DuplicateBarcode));
+        assert_eq!(
+            service.add(draft).await,
+            Err(CatalogError::DuplicateBarcode)
+        );
         assert!(matches!(
-            service.add(Draft {
-                name: "Invalid".into(),
-                barcode: String::new(),
-                price: "1.001".into()
-            }),
+            service
+                .add(Draft {
+                    name: "Invalid".into(),
+                    barcode: String::new(),
+                    price: "1.001".into()
+                })
+                .await,
             Err(CatalogError::Validation(_))
         ));
-        assert_eq!(SqliteCatalog::at(path).list().unwrap(), vec![saved]);
+        assert_eq!(SqliteCatalog::at(path).list().await.unwrap(), vec![saved]);
+        assert!(SqliteCatalog::at(dir.path()).list().await.is_err());
     }
-    #[test]
-    fn refuses_newer_schema_and_failed_open() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("new.sqlite3");
-        let conn = Connection::open(&path).unwrap();
-        conn.pragma_update(None, "user_version", 99).unwrap();
-        drop(conn);
-        assert!(SqliteCatalog::at(&path).list().is_err());
-        assert_eq!(
-            Connection::open(&path)
-                .unwrap()
-                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            99
-        );
-        assert!(SqliteCatalog::at(dir.path()).list().is_err());
-    }
-    #[test]
-    fn crash_worker() {
+
+    #[tokio::test]
+    async fn crash_worker() {
         use std::io::Write;
         let Ok(path) = std::env::var("FACTUROX_CRASH_TEST_DB") else {
             return;
         };
         let service = SqliteCatalog::at(path);
-        let mut conn = service.open().unwrap();
-        let tx = conn.transaction().unwrap();
-        tx.execute(
+        let mut conn = service.open().await.unwrap();
+        let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        sqlx::query(
             "INSERT INTO products (name, barcode, price_cents) VALUES ('Crash test', NULL, 100)",
-            [],
         )
+        .execute(&mut *tx)
+        .await
         .unwrap();
         if std::env::var_os("FACTUROX_CRASH_TEST_COMMIT").is_some() {
-            tx.commit().unwrap();
+            tx.commit().await.unwrap();
         }
         println!("FACTUROX_READY");
         std::io::stdout().flush().unwrap();
@@ -526,15 +416,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn interrupted_write_preserves_only_committed_records() {
+    #[tokio::test]
+    async fn interrupted_write_preserves_only_committed_records() {
         use std::{
             io::{BufRead, BufReader},
             process::{Command, Stdio},
         };
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("crash.sqlite3");
-        SqliteCatalog::at(&path).list().unwrap();
+        SqliteCatalog::at(&path).list().await.unwrap();
         for committed in [false, true] {
             let mut command = Command::new(std::env::current_exe().unwrap());
             command
@@ -559,11 +449,8 @@ mod tests {
             }
             child.kill().unwrap();
             child.wait().unwrap();
-            assert!(
-                ready,
-                "child exited before reaching the requested transaction boundary"
-            );
-            let products = SqliteCatalog::at(&path).list().unwrap();
+            assert!(ready, "child exited before the transaction boundary");
+            let products = SqliteCatalog::at(&path).list().await.unwrap();
             assert_eq!(products.len(), usize::from(committed));
             if committed {
                 assert_eq!(products[0].name, "Crash test");

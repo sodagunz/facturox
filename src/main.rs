@@ -1,4 +1,5 @@
 mod catalog;
+mod database;
 mod orders;
 mod settings;
 
@@ -293,21 +294,6 @@ enum Message {
     Loaded(u64, Result<Snapshot, CatalogError>),
     Added(u64, Result<Product, CatalogError>),
 }
-fn worker<T: Send + 'static>(
-    f: impl FnOnce() -> Result<T, CatalogError> + Send + 'static,
-) -> impl Future<Output = Result<T, CatalogError>> + Send {
-    let (sender, receiver) = futures_channel::oneshot::channel();
-    std::thread::spawn(move || {
-        let _ = sender.send(f());
-    });
-    async move {
-        receiver.await.unwrap_or_else(|_| {
-            Err(CatalogError::Storage(
-                "Catalog worker stopped unexpectedly.".into(),
-            ))
-        })
-    }
-}
 fn service() -> Result<SqliteCatalog, CatalogError> {
     Ok(SqliteCatalog::at(SqliteCatalog::default_path()?))
 }
@@ -349,17 +335,17 @@ impl App {
         self.request = self.request.wrapping_add(1);
         let id = self.request;
         Task::perform(
-            worker(|| {
+            async move {
                 let service = service()?;
                 Ok(Snapshot {
-                    products: service.list()?,
-                    stock: service.list_stock()?,
-                    open_order: service.open_order()?,
-                    history: service.order_history()?,
-                    company: service.load_company_details()?,
-                    theme: service.load_theme()?,
+                    products: service.list().await?,
+                    stock: service.list_stock().await?,
+                    open_order: service.open_order().await?,
+                    history: service.order_history().await?,
+                    company: service.load_company_details().await?,
+                    theme: service.load_theme().await?,
                 })
-            }),
+            },
             move |result| Message::Loaded(id, result),
         )
     }
@@ -371,23 +357,27 @@ impl App {
         self.request = self.request.wrapping_add(1);
         let request = self.request;
         Task::perform(
-            worker(move || {
+            async move {
                 let service = service()?;
                 match pending.action {
                     OrderAction::Add(product_id) => {
-                        service.add_to_order(&pending.request_id, product_id, 1)
+                        service
+                            .add_to_order(&pending.request_id, product_id, 1)
+                            .await
                     }
                     OrderAction::Remove(order_id, product_id) => {
-                        service.remove_from_order(&pending.request_id, order_id, product_id, 1)
+                        service
+                            .remove_from_order(&pending.request_id, order_id, product_id, 1)
+                            .await
                     }
                     OrderAction::Close(order_id) => {
-                        service.close_order(&pending.request_id, order_id)
+                        service.close_order(&pending.request_id, order_id).await
                     }
                     OrderAction::Cancel(order_id) => {
-                        service.cancel_order(&pending.request_id, order_id)
+                        service.cancel_order(&pending.request_id, order_id).await
                     }
                 }
-            }),
+            },
             move |result| Message::OrderCompleted(request, result),
         )
     }
@@ -425,14 +415,16 @@ impl App {
         self.request = self.request.wrapping_add(1);
         let request = self.request;
         Task::perform(
-            worker(move || {
-                service()?.adjust_stock_once(
-                    &pending.request_id,
-                    pending.product_id,
-                    pending.delta,
-                    &pending.reason,
-                )
-            }),
+            async move {
+                service()?
+                    .adjust_stock_once(
+                        &pending.request_id,
+                        pending.product_id,
+                        pending.delta,
+                        &pending.reason,
+                    )
+                    .await
+            },
             move |result| Message::StockAdjusted(request, result),
         )
     }
@@ -491,7 +483,7 @@ impl App {
         let id = self.request;
         let details = self.company.clone();
         Task::perform(
-            worker(move || service()?.save_company_details(&details)),
+            async move { service()?.save_company_details(&details).await },
             move |result| Message::CompanySaved(id, result),
         )
     }
@@ -507,10 +499,10 @@ impl App {
             ThemePreference::Light
         };
         Task::perform(
-            worker(move || {
-                service()?.save_theme(next)?;
+            async move {
+                service()?.save_theme(next).await?;
                 Ok(next)
-            }),
+            },
             move |result| Message::ThemeSaved(id, result),
         )
     }
@@ -576,7 +568,7 @@ impl App {
                 self.request = self.request.wrapping_add(1);
                 let id = self.request;
                 let draft = self.draft.clone();
-                return Task::perform(worker(move || service()?.add(draft)), move |result| {
+                return Task::perform(async move { service()?.add(draft).await }, move |result| {
                     Message::Added(id, result)
                 });
             }
