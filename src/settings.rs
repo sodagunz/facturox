@@ -72,8 +72,8 @@ impl SqliteCatalog {
         .map_err(storage)?
         .rows_affected();
         if changed != 1 {
-            return Err(CatalogError::Storage(
-                "The settings record is missing.".into(),
+            return Err(CatalogError::storage_message(
+                "The settings record is missing.",
             ));
         }
         Ok(details)
@@ -89,7 +89,7 @@ impl SqliteCatalog {
         match value.as_str() {
             "light" => Ok(ThemePreference::Light),
             "dark" => Ok(ThemePreference::Dark),
-            _ => Err(CatalogError::Storage("Unknown theme preference.".into())),
+            _ => Err(CatalogError::storage_message("Unknown theme preference.")),
         }
     }
 
@@ -107,8 +107,8 @@ impl SqliteCatalog {
             .map_err(storage)?
             .rows_affected();
         if changed != 1 {
-            return Err(CatalogError::Storage(
-                "The settings record is missing.".into(),
+            return Err(CatalogError::storage_message(
+                "The settings record is missing.",
             ));
         }
         Ok(())

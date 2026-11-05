@@ -102,7 +102,7 @@ async fn read_order(conn: &mut SqliteConnection, id: i64) -> Result<Order, Catal
         "open" => OrderStatus::Open,
         "closed" => OrderStatus::Closed,
         "cancelled" => OrderStatus::Cancelled,
-        _ => return Err(CatalogError::Storage("Unknown order status.".into())),
+        _ => return Err(CatalogError::storage_message("Unknown order status.")),
     };
     let lines: Vec<(i64, String, i64, i64)> = sqlx::query_as(
         "SELECT product_id, name, unit_price_cents, quantity FROM order_lines WHERE order_id = ?1 ORDER BY rowid"
@@ -123,7 +123,7 @@ async fn read_order(conn: &mut SqliteConnection, id: i64) -> Result<Order, Catal
                 .checked_mul(line.quantity)
                 .and_then(|amount| total.checked_add(amount))
         })
-        .ok_or_else(|| CatalogError::Storage("Order total exceeds the supported range.".into()))?;
+        .ok_or_else(|| CatalogError::storage_message("Order total exceeds the supported range."))?;
     Ok(Order {
         id,
         status,
