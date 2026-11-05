@@ -6,7 +6,7 @@ Install [devenv](https://devenv.sh/) and run `devenv shell`. The shell reads `ru
 
 CI builds on Linux x86-64, Windows x86-64 and macOS ARM64 using native runners. Build artifacts are unsigned executables. Compilation does not verify graphics or hardware; launch and exercise the app on each operating system before release. Development and initial smoke testing happen on Linux; test Windows and macOS natively when hardware is available. Cross-compilation is not required for CI.
 
-CI checks dependency advisories, licenses and sources with `cargo-deny`. Review any proposed advisory or license exception individually, record its reason and remove it when no longer needed; never suppress an entire class of findings.
+Run `cargo deny --locked check advisories licenses sources` inside the devenv shell to check dependency advisories, licenses and sources. CI runs the same checks. Review any proposed advisory or license exception individually, record its reason and remove it when no longer needed; never suppress an entire class of findings.
 
 The catalog stores its SQLite database in the current user's platform data directory under `facturox/catalog.sqlite3` (on Linux, normally `$XDG_DATA_HOME/facturox` or `~/.local/share/facturox`). The catalog is an early development slice, not a checkout or invoicing system. Keep the database on a local filesystem. A live SQLite database can have WAL files: do not copy just the database file while the application is running. A verified encrypted off-machine backup and restore procedure is required before production use.
 
