@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT request, receipt FROM inventory_commands WHERE id=?",
+  "describe": {
+    "columns": [
+      {
+        "name": "request",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inventory_commands",
+            "name": "request"
+          }
+        }
+      },
+      {
+        "name": "receipt",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inventory_commands",
+            "name": "receipt"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "8269a613938914e0acb3e3a993c7bf7abee65b5750b74a1ccb2a2893cb657cef"
+}

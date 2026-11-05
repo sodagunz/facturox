@@ -1,0 +1,18 @@
+[package]
+name = "facturox-native"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+color-eyre = { workspace = true }
+facturox-core = { workspace = true }
+iced = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }

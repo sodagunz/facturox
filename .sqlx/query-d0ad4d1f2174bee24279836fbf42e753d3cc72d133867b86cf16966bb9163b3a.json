@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE inventory_commands SET id=' ' WHERE id='order'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "d0ad4d1f2174bee24279836fbf42e753d3cc72d133867b86cf16966bb9163b3a"
+}

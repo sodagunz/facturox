@@ -1,9 +1,12 @@
-{ pkgs, lib, ... }:
+{ config, pkgs, lib, ... }:
 {
   packages = [
     pkgs.git
     pkgs.cargo-deny
+    pkgs.sqlx-cli
   ];
+  env.DATABASE_URL = "sqlite://${config.devenv.root}/target/sqlx-schema.sqlite3";
+
   languages.rust.enable = true;
   languages.rust.toolchainFile = ./rust-toolchain.toml;
 

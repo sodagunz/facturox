@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO inventory_events(\"order\",payload,occurred_at,operation_id) VALUES(?,jsonb(?),?,?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "9575f4a3561e89ad31b3408f0efee18422c0f816ae94ebf6952d6dcf8a0e9784"
+}

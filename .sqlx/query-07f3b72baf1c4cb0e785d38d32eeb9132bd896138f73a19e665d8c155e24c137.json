@@ -1,0 +1,42 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT typeof(payload) AS \"storage!: String\", json_valid(payload,8) AS \"valid!: i64\", json_extract(payload,'$.id') AS \"id!: String\", json(payload) AS \"payload!: String\" FROM orders",
+  "describe": {
+    "columns": [
+      {
+        "name": "storage!: String",
+        "ordinal": 0,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "valid!: i64",
+        "ordinal": 1,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "id!: String",
+        "ordinal": 2,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "payload!: String",
+        "ordinal": 3,
+        "type_info": "Null",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "07f3b72baf1c4cb0e785d38d32eeb9132bd896138f73a19e665d8c155e24c137"
+}

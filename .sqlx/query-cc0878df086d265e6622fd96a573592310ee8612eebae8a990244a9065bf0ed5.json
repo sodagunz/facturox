@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT business_name, tax_identifier, address, contact FROM app_settings WHERE id=1",
+  "describe": {
+    "columns": [
+      {
+        "name": "business_name",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "app_settings",
+            "name": "business_name"
+          }
+        }
+      },
+      {
+        "name": "tax_identifier",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "app_settings",
+            "name": "tax_identifier"
+          }
+        }
+      },
+      {
+        "name": "address",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "app_settings",
+            "name": "address"
+          }
+        }
+      },
+      {
+        "name": "contact",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "app_settings",
+            "name": "contact"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cc0878df086d265e6622fd96a573592310ee8612eebae8a990244a9065bf0ed5"
+}

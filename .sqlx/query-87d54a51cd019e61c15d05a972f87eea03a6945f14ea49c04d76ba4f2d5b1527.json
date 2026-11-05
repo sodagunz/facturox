@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO orders(id,payload) VALUES(?,jsonb(?))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "87d54a51cd019e61c15d05a972f87eea03a6945f14ea49c04d76ba4f2d5b1527"
+}

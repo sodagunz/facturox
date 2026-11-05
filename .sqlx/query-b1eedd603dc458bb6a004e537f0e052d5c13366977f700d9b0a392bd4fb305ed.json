@@ -1,0 +1,35 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT typeof(payload) AS \"storage!: String\", json_valid(payload,8) AS \"valid!: i64\", json_extract(payload,'$.ProductCreated.name') AS \"name: String\" FROM inventory_events ORDER BY \"order\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "storage!: String",
+        "ordinal": 0,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "valid!: i64",
+        "ordinal": 1,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "name: String",
+        "ordinal": 2,
+        "type_info": "Null",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "b1eedd603dc458bb6a004e537f0e052d5c13366977f700d9b0a392bd4fb305ed"
+}

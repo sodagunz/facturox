@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE app_settings SET theme=? WHERE id=1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "8116c4d1528508a95b5800e427848a10889197b32f1513964332fc4293c55cf3"
+}

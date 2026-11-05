@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE inventory_events SET \"order\"=2, payload=jsonb(?) WHERE \"order\" IN (2,3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "8b4a514bed9162842c532f45a20de95f59fcb24c9e2ce5fa803a2fd2967c4189"
+}
