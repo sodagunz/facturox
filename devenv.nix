@@ -1,6 +1,9 @@
 { pkgs, lib, ... }:
 {
-  packages = [ pkgs.git ];
+  packages = [
+    pkgs.git
+    pkgs.cargo-deny
+  ];
   languages.rust.enable = true;
   languages.rust.toolchainFile = ./rust-toolchain.toml;
 
