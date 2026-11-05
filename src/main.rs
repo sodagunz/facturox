@@ -1,48 +1,80 @@
 mod catalog;
 mod orders;
+mod settings;
 
 use catalog::{Catalog, CatalogError, Draft, Product, SqliteCatalog, StockBalance};
 use iced::widget::{button, column, container, row, scrollable, text, text_input};
 use iced::{Alignment, Border, Color, Element, Fill, Subscription, Task, Theme, keyboard};
 use orders::{Order, OrderStatus};
+use settings::{CompanyDetails, ThemePreference};
 
 fn main() -> iced::Result {
     iced::application(App::boot, App::update, App::view)
         .title("Facturox")
-        .theme(|_: &App| Theme::Light)
+        .theme(|app: &App| {
+            if app.theme == ThemePreference::Dark {
+                Theme::Dark
+            } else {
+                Theme::Light
+            }
+        })
         .subscription(|_| App::subscription())
         .run()
 }
 
 const MUTED: Color = Color::from_rgb8(100, 106, 116);
-fn card_style(_: &Theme) -> container::Style {
+fn card_style(theme: &Theme) -> container::Style {
     container::Style::default()
-        .background(Color::WHITE)
+        .background(if matches!(theme, Theme::Dark) {
+            Color::from_rgb8(34, 36, 42)
+        } else {
+            Color::WHITE
+        })
         .border(Border {
-            color: Color::from_rgb8(226, 229, 233),
+            color: if matches!(theme, Theme::Dark) {
+                Color::from_rgb8(65, 68, 76)
+            } else {
+                Color::from_rgb8(226, 229, 233)
+            },
             width: 1.0,
             radius: 12.0.into(),
         })
 }
-fn inset_style(_: &Theme) -> container::Style {
+fn inset_style(theme: &Theme) -> container::Style {
     container::Style::default()
-        .background(Color::from_rgb8(249, 250, 251))
+        .background(if matches!(theme, Theme::Dark) {
+            Color::from_rgb8(43, 46, 53)
+        } else {
+            Color::from_rgb8(249, 250, 251)
+        })
         .border(Border {
-            color: Color::from_rgb8(235, 237, 240),
+            color: if matches!(theme, Theme::Dark) {
+                Color::from_rgb8(65, 68, 76)
+            } else {
+                Color::from_rgb8(235, 237, 240)
+            },
             width: 1.0,
             radius: 8.0.into(),
         })
 }
-fn brand_style(_: &Theme) -> container::Style {
+fn brand_style(theme: &Theme) -> container::Style {
     container::Style::default()
-        .background(Color::from_rgb8(25, 30, 38))
+        .background(if matches!(theme, Theme::Dark) {
+            Color::from_rgb8(65, 72, 85)
+        } else {
+            Color::from_rgb8(25, 30, 38)
+        })
         .border(Border {
             radius: 8.0.into(),
             ..Border::default()
         })
 }
-fn page_style(_: &Theme) -> container::Style {
-    container::Style::default().background(Color::from_rgb8(246, 247, 249))
+fn page_style(theme: &Theme) -> container::Style {
+    container::Style::default().background(if matches!(theme, Theme::Dark) {
+        Color::from_rgb8(21, 23, 27)
+    } else {
+        Color::from_rgb8(246, 247, 249)
+    })
 }
 fn error_style(_: &Theme) -> container::Style {
     container::Style::default()
@@ -53,7 +85,32 @@ fn error_style(_: &Theme) -> container::Style {
             radius: 8.0.into(),
         })
 }
-fn primary_button(_: &Theme, status: button::Status) -> button::Style {
+fn primary_button(theme: &Theme, status: button::Status) -> button::Style {
+    if matches!(theme, Theme::Dark) {
+        let (background, foreground) = match status {
+            button::Status::Disabled => (
+                Color::from_rgb8(55, 58, 64),
+                Color::from_rgb8(145, 150, 160),
+            ),
+            button::Status::Hovered | button::Status::Pressed => (
+                Color::from_rgb8(205, 210, 218),
+                Color::from_rgb8(24, 26, 30),
+            ),
+            button::Status::Active => (
+                Color::from_rgb8(236, 238, 242),
+                Color::from_rgb8(24, 26, 30),
+            ),
+        };
+        return button::Style {
+            background: Some(background.into()),
+            text_color: foreground,
+            border: Border {
+                radius: 8.0.into(),
+                ..Border::default()
+            },
+            ..button::Style::default()
+        };
+    }
     let (background, foreground) = match status {
         button::Status::Disabled => (
             Color::from_rgb8(229, 231, 235),
@@ -75,7 +132,41 @@ fn primary_button(_: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-fn secondary_button(_: &Theme, status: button::Status) -> button::Style {
+fn ghost_button(theme: &Theme, status: button::Status) -> button::Style {
+    let mut style = button::text(theme, status);
+    if matches!(theme, Theme::Dark) {
+        style.text_color = Color::from_rgb8(232, 234, 238);
+    }
+    style
+}
+
+fn secondary_button(theme: &Theme, status: button::Status) -> button::Style {
+    if matches!(theme, Theme::Dark) {
+        let (background, foreground) = match status {
+            button::Status::Disabled => (
+                Color::from_rgb8(39, 42, 48),
+                Color::from_rgb8(125, 130, 140),
+            ),
+            button::Status::Hovered | button::Status::Pressed => (
+                Color::from_rgb8(64, 68, 76),
+                Color::from_rgb8(238, 240, 244),
+            ),
+            button::Status::Active => (
+                Color::from_rgb8(46, 49, 56),
+                Color::from_rgb8(238, 240, 244),
+            ),
+        };
+        return button::Style {
+            background: Some(background.into()),
+            text_color: foreground,
+            border: Border {
+                color: Color::from_rgb8(76, 80, 90),
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            ..button::Style::default()
+        };
+    }
     let (background, foreground, border) = match status {
         button::Status::Disabled => (
             Color::from_rgb8(248, 249, 250),
@@ -108,6 +199,9 @@ fn secondary_button(_: &Theme, status: button::Status) -> button::Style {
 #[derive(Default)]
 struct App {
     screen: Screen,
+    theme: ThemePreference,
+    company: CompanyDetails,
+    settings_loaded: bool,
     draft: Draft,
     products: Vec<Product>,
     stock: Vec<StockBalance>,
@@ -131,6 +225,7 @@ enum Screen {
     Orders,
     History,
     About,
+    Settings,
 }
 #[derive(Debug, Clone, Copy)]
 enum OrderAction {
@@ -160,6 +255,8 @@ struct Snapshot {
     stock: Vec<StockBalance>,
     open_order: Option<Order>,
     history: Vec<Order>,
+    company: CompanyDetails,
+    theme: ThemePreference,
 }
 
 #[derive(Debug, Clone)]
@@ -168,6 +265,15 @@ enum Message {
     Orders,
     History,
     About,
+    Settings,
+    ToggleTheme,
+    ThemeSaved(u64, Result<ThemePreference, CatalogError>),
+    CompanyName(String),
+    CompanyTaxId(String),
+    CompanyAddress(String),
+    CompanyContact(String),
+    SaveCompany,
+    CompanySaved(u64, Result<CompanyDetails, CatalogError>),
     FocusNext,
     FocusPrevious,
     Name(String),
@@ -222,6 +328,13 @@ fn focus_navigation(event: &keyboard::Event) -> Option<Message> {
     }
 }
 impl App {
+    fn muted(&self) -> Color {
+        if self.theme == ThemePreference::Dark {
+            Color::from_rgb8(170, 175, 185)
+        } else {
+            MUTED
+        }
+    }
     fn subscription() -> Subscription<Message> {
         keyboard::listen().filter_map(|event| focus_navigation(&event))
     }
@@ -243,6 +356,8 @@ impl App {
                     stock: service.list_stock()?,
                     open_order: service.open_order()?,
                     history: service.order_history()?,
+                    company: service.load_company_details()?,
+                    theme: service.load_theme()?,
                 })
             }),
             move |result| Message::Loaded(id, result),
@@ -368,12 +483,87 @@ impl App {
         }
     }
 
+    fn save_company(&mut self) -> Task<Message> {
+        self.busy = true;
+        self.error = None;
+        self.notice = None;
+        self.request = self.request.wrapping_add(1);
+        let id = self.request;
+        let details = self.company.clone();
+        Task::perform(
+            worker(move || service()?.save_company_details(&details)),
+            move |result| Message::CompanySaved(id, result),
+        )
+    }
+
+    fn toggle_theme(&mut self) -> Task<Message> {
+        self.busy = true;
+        self.error = None;
+        self.request = self.request.wrapping_add(1);
+        let id = self.request;
+        let next = if self.theme == ThemePreference::Light {
+            ThemePreference::Dark
+        } else {
+            ThemePreference::Light
+        };
+        Task::perform(
+            worker(move || {
+                service()?.save_theme(next)?;
+                Ok(next)
+            }),
+            move |result| Message::ThemeSaved(id, result),
+        )
+    }
+
+    fn loaded(&mut self, result: Result<Snapshot, CatalogError>) {
+        self.busy = false;
+        match result {
+            Ok(snapshot) => {
+                if !self.settings_loaded {
+                    self.company = snapshot.company;
+                    self.theme = snapshot.theme;
+                    self.settings_loaded = true;
+                }
+                self.products = snapshot.products;
+                self.stock = snapshot.stock;
+                self.open_order = snapshot.open_order;
+                self.order_history = snapshot.history;
+                self.state_stale = false;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Catalog => self.screen = Screen::Catalog,
             Message::Orders => self.screen = Screen::Orders,
             Message::History => self.screen = Screen::History,
             Message::About => self.screen = Screen::About,
+            Message::Settings => self.screen = Screen::Settings,
+            Message::CompanyName(value) if !self.busy => self.company.business_name = value,
+            Message::CompanyTaxId(value) if !self.busy => self.company.tax_identifier = value,
+            Message::CompanyAddress(value) if !self.busy => self.company.address = value,
+            Message::CompanyContact(value) if !self.busy => self.company.contact = value,
+            Message::SaveCompany if self.can_modify() => return self.save_company(),
+            Message::CompanySaved(id, result) if self.busy && id == self.request => {
+                self.busy = false;
+                match result {
+                    Ok(details) => {
+                        self.company = details;
+                        self.notice = Some("Company details saved.".into());
+                    }
+                    Err(error) => self.error = Some(error.to_string()),
+                }
+            }
+            Message::ToggleTheme if self.can_modify() => return self.toggle_theme(),
+            Message::ThemeSaved(id, result) if self.busy && id == self.request => {
+                self.busy = false;
+                match result {
+                    Ok(theme) => self.theme = theme,
+                    Err(error) => self.error = Some(error.to_string()),
+                }
+            }
             Message::FocusNext => return iced::widget::operation::focus_next(),
             Message::FocusPrevious => return iced::widget::operation::focus_previous(),
             Message::Name(value) if !self.busy => self.draft.name = value,
@@ -421,19 +611,7 @@ impl App {
                 self.error = None;
                 return self.load();
             }
-            Message::Loaded(id, result) if self.busy && id == self.request => {
-                self.busy = false;
-                match result {
-                    Ok(snapshot) => {
-                        self.products = snapshot.products;
-                        self.stock = snapshot.stock;
-                        self.open_order = snapshot.open_order;
-                        self.order_history = snapshot.history;
-                        self.state_stale = false;
-                    }
-                    Err(error) => self.error = Some(error.to_string()),
-                }
-            }
+            Message::Loaded(id, result) if self.busy && id == self.request => self.loaded(result),
             Message::Added(id, result) if self.busy && id == self.request => {
                 self.busy = false;
                 match result {
@@ -458,14 +636,14 @@ impl App {
             text("Current order").size(22),
             text("Items are reserved as soon as they are added.")
                 .size(14)
-                .color(MUTED)
+                .color(self.muted())
         ]
         .spacing(16);
         if let Some(order) = &self.open_order {
             content = content.push(
                 text(format!("ORDER #{:04}", order.id))
                     .size(12)
-                    .color(MUTED),
+                    .color(self.muted()),
             );
             for line in &order.lines {
                 let mut add = button("+").style(secondary_button).padding([8, 14]);
@@ -486,7 +664,7 @@ impl App {
                         line.unit_price_cents % 100
                     ))
                     .size(13)
-                    .color(MUTED)
+                    .color(self.muted())
                 ]
                 .spacing(4)
                 .width(Fill);
@@ -537,7 +715,7 @@ impl App {
                         text("Your order is empty").size(17),
                         text("Add a product from the catalog to get started.")
                             .size(14)
-                            .color(MUTED)
+                            .color(self.muted())
                     ]
                     .spacing(8),
                 )
@@ -554,12 +732,12 @@ impl App {
             text("Order log").size(22),
             text("A record of closed and cancelled orders.")
                 .size(14)
-                .color(MUTED)
+                .color(self.muted())
         ]
         .spacing(16);
         if self.order_history.is_empty() {
             content = content.push(
-                container(text("No orders yet.").color(MUTED))
+                container(text("No orders yet.").color(self.muted()))
                     .padding(24)
                     .width(Fill)
                     .style(card_style),
@@ -574,7 +752,7 @@ impl App {
             let heading = row![
                 column![
                     text(format!("Order #{:04}", order.id)).size(17),
-                    text(status).size(13).color(MUTED)
+                    text(status).size(13).color(self.muted())
                 ]
                 .spacing(5)
                 .width(Fill),
@@ -597,7 +775,7 @@ impl App {
                         line.unit_price_cents % 100
                     ))
                     .size(14)
-                    .color(MUTED),
+                    .color(self.muted()),
                 );
             }
             content = content.push(container(details).width(Fill).padding(20).style(card_style));
@@ -622,7 +800,7 @@ impl App {
             text("Add a product").size(18),
             text("Create a catalog item with a price.")
                 .size(13)
-                .color(MUTED),
+                .color(self.muted()),
             text_input("Product name", &self.draft.name)
                 .on_input(Message::Name)
                 .padding(11),
@@ -652,7 +830,7 @@ impl App {
         }
         let stock_form = column![
             text("Adjust stock").size(18),
-            text(selected).size(13).color(MUTED),
+            text(selected).size(13).color(self.muted()),
             text_input("Change in units, e.g. 5 or -2", &self.stock_delta)
                 .on_input(Message::StockDelta)
                 .padding(11),
@@ -667,7 +845,7 @@ impl App {
                 text("Products").size(20).width(Fill),
                 text(format!("{} items", self.products.len()))
                     .size(13)
-                    .color(MUTED)
+                    .color(self.muted())
             ]
             .align_y(Alignment::Center)
         ]
@@ -676,7 +854,7 @@ impl App {
             listing = listing.push(
                 text("No products yet. Add your first item above.")
                     .size(14)
-                    .color(MUTED),
+                    .color(self.muted()),
             );
         }
         for product in &self.products {
@@ -707,7 +885,7 @@ impl App {
             }
             let info = column![
                 text(&product.name).size(16),
-                text(subtitle).size(13).color(MUTED)
+                text(subtitle).size(13).color(self.muted())
             ]
             .spacing(4)
             .width(Fill);
@@ -736,7 +914,7 @@ impl App {
                     text("Catalog & stock").size(24),
                     text("Manage products and available inventory.")
                         .size(14)
-                        .color(MUTED)
+                        .color(self.muted())
                 ]
                 .spacing(5)
                 .width(Fill)
@@ -750,6 +928,43 @@ impl App {
         scrollable(content).height(Fill).into()
     }
 
+    fn view_settings(&self) -> Element<'_, Message> {
+        let mut save = button("Save company details")
+            .padding([10, 16])
+            .style(primary_button);
+        if self.can_modify() {
+            save = save.on_press(Message::SaveCompany);
+        }
+        let form = column![
+            text("Company details").size(22),
+            text("Stored locally on this computer.")
+                .size(14)
+                .color(self.muted()),
+            text("Business name").size(14),
+            text_input("Business name", &self.company.business_name)
+                .on_input(Message::CompanyName)
+                .padding(10),
+            text("Tax identifier").size(14),
+            text_input("CUIT (optional)", &self.company.tax_identifier)
+                .on_input(Message::CompanyTaxId)
+                .padding(10),
+            text("Address").size(14),
+            text_input("Address (optional)", &self.company.address)
+                .on_input(Message::CompanyAddress)
+                .padding(10),
+            text("Contact").size(14),
+            text_input("Contact (optional)", &self.company.contact)
+                .on_input(Message::CompanyContact)
+                .padding(10),
+            save,
+        ]
+        .spacing(10)
+        .max_width(640);
+        scrollable(container(form).padding(24).width(Fill).style(card_style))
+            .height(Fill)
+            .into()
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "Keep the application shell and its status controls visible together."
@@ -761,7 +976,7 @@ impl App {
                 .style(if selected {
                     secondary_button
                 } else {
-                    button::text
+                    ghost_button
                 })
                 .on_press(message)
         };
@@ -794,10 +1009,10 @@ impl App {
                 .style(brand_style),
             column![
                 text("facturox").size(20),
-                text("POINT OF SALE").size(10).color(MUTED)
+                text("POINT OF SALE").size(10).color(self.muted())
             ]
             .spacing(2),
-            container(text("LOCAL").size(11).color(MUTED))
+            container(text("LOCAL").size(11).color(self.muted()))
                 .padding([5, 9])
                 .style(inset_style)
         ]
@@ -809,7 +1024,7 @@ impl App {
                     text("About Facturox").size(22),
                     text("A local-first point of sale in development.")
                         .size(14)
-                        .color(MUTED)
+                        .color(self.muted())
                 ]
                 .spacing(10),
             )
@@ -817,13 +1032,23 @@ impl App {
             .padding(24)
             .style(card_style)
             .into(),
+            Screen::Settings => self.view_settings(),
             Screen::Orders => self.view_order(),
             Screen::History => self.view_history(),
             Screen::Catalog => self.view_catalog(),
         };
-        let mut layout = column![brand, nav].spacing(16);
+        let header = row![
+            brand,
+            iced::widget::Space::new().width(Fill),
+            button("Settings")
+                .padding([10, 16])
+                .style(secondary_button)
+                .on_press(Message::Settings)
+        ]
+        .align_y(Alignment::Center);
+        let mut layout = column![header, nav].spacing(16);
         if self.busy {
-            layout = layout.push(text("Working…").size(14).color(MUTED));
+            layout = layout.push(text("Working…").size(14).color(self.muted()));
         }
         if let Some(error) = &self.error {
             layout = layout.push(
@@ -834,7 +1059,13 @@ impl App {
             );
         }
         if let Some(notice) = &self.notice {
-            layout = layout.push(text(notice).size(14).color(Color::from_rgb8(22, 101, 52)));
+            layout = layout.push(text(notice).size(14).color(
+                if self.theme == ThemePreference::Dark {
+                    Color::from_rgb8(134, 239, 172)
+                } else {
+                    Color::from_rgb8(22, 101, 52)
+                },
+            ));
         }
         if self.pending_order.is_some() && !self.busy {
             layout = layout.push(button("Retry order operation").on_press(Message::RetryOrder));
@@ -845,9 +1076,20 @@ impl App {
         if self.state_stale && !self.busy {
             layout = layout.push(button("Refresh state").on_press(Message::Refresh));
         }
+        let mut theme_button = button(if self.theme == ThemePreference::Light {
+            "☾  Night mode"
+        } else {
+            "☀  Day mode"
+        })
+        .padding([10, 16])
+        .style(secondary_button);
+        if self.can_modify() {
+            theme_button = theme_button.on_press(Message::ToggleTheme);
+        }
         container(
             layout
-                .push(content)
+                .push(container(content).width(Fill).height(Fill))
+                .push(theme_button)
                 .spacing(18)
                 .padding(28)
                 .width(Fill)

@@ -79,7 +79,7 @@ impl SqliteCatalog {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(storage)?;
-        if version > 3 {
+        if version > 4 {
             return Err(CatalogError::Storage(format!(
                 "Unsupported catalog schema version {version}."
             )));
@@ -88,7 +88,7 @@ impl SqliteCatalog {
             .map_err(storage)?;
         conn.pragma_update(None, "synchronous", "FULL")
             .map_err(storage)?;
-        if version < 3 {
+        if version < 4 {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(storage)?;
@@ -96,7 +96,7 @@ impl SqliteCatalog {
             let current: i64 = tx
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .map_err(storage)?;
-            if current > 3 {
+            if current > 4 {
                 return Err(CatalogError::Storage(format!(
                     "Unsupported catalog schema version {current}."
                 )));
@@ -110,6 +110,9 @@ impl SqliteCatalog {
             if current <= 2 {
                 crate::orders::migrate_v3(&tx)?;
                 migrate_stock_v3(&tx)?;
+            }
+            if current <= 3 {
+                crate::settings::migrate_v4(&tx)?;
             }
             tx.commit().map_err(storage)?;
         }
