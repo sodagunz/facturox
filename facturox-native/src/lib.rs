@@ -1,6 +1,7 @@
 //! Native Elm-style composition; persistence is owned exclusively by the core backend.
 
 mod messages;
+mod product_search;
 mod state;
 #[cfg(test)]
 mod tests;

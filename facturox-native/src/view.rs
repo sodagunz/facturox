@@ -5,6 +5,7 @@ mod format;
 mod input;
 mod page;
 pub mod palette;
+mod product_matches;
 mod typography;
 
 use self::{
@@ -14,10 +15,12 @@ use self::{
     format::money,
     input::input,
     page::page,
+    product_matches::product_matches,
     typography::{heading, muted},
 };
 use crate::{
     messages::Message,
+    product_search,
     state::{App, Field, Screen},
     update::total,
 };
@@ -83,16 +86,40 @@ impl App {
         body = body.push(content);
         page(scrollable(body.padding(24)))
     }
-    fn catalog(&self) -> Element<'_, Message> {
+    fn product_picker(&self) -> Element<'_, Message> {
         let enabled = self.editable();
-        let mut products = column![heading("Available products")].spacing(12);
-        for product in self.inventory.products.values() {
+        let matches =
+            product_search::filter(self.inventory.products.values(), &self.catalog_search);
+        let products = column![
+            heading("Available products"),
+            input(
+                "Search by product name or barcode",
+                &self.catalog_search,
+                Field::CatalogSearch,
+                enabled
+            ),
+            muted(format!(
+                "{} of {} products",
+                matches.len(),
+                self.inventory.products.len()
+            )),
+        ]
+        .spacing(12);
+        let mut listing = column![].spacing(12);
+        if matches.is_empty() {
+            listing = listing.push(muted(if self.inventory.products.is_empty() {
+                "Create your first product in Manage inventory."
+            } else {
+                "No matching products. Try a different name or barcode."
+            }));
+        }
+        for product in matches {
             let quantity = self
                 .inventory
                 .quantities
                 .get(&product.id)
                 .map_or(0, |q| q.quantity);
-            products = products.push(inset(
+            listing = listing.push(inset(
                 row![
                     column![
                         text(&product.name).size(18),
@@ -109,9 +136,12 @@ impl App {
                 .wrap(),
             ));
         }
-        if self.inventory.products.is_empty() {
-            products = products.push(muted("Create your first product in Manage inventory."));
-        }
+        products.push(scrollable(listing).height(420)).into()
+    }
+
+    fn catalog(&self) -> Element<'_, Message> {
+        let enabled = self.editable();
+        let products = self.product_picker();
         let mut draft = column![
             heading("Current draft"),
             muted("Review quantities before recording checkout.")
@@ -200,33 +230,75 @@ impl App {
         }
         card(history)
     }
-    fn manage(&self) -> Element<'_, Message> {
+    fn create_product_form(&self) -> Element<'_, Message> {
         let enabled = self.editable();
-        let create = card(
-            column![
-                heading("Create product"),
-                input("Product name", &self.name, Field::Name, enabled),
-                input("Barcode (optional)", &self.barcode, Field::Barcode, enabled),
-                input(
-                    "Price in pesos (e.g. 1250.50)",
-                    &self.price,
-                    Field::Price,
-                    enabled
-                ),
-                input("Opening quantity", &self.opening, Field::Opening, enabled),
-                action("Create product", Message::Create, enabled)
-            ]
-            .spacing(14),
-        );
-        let mut adjust =
-            column![heading("Adjust inventory"), muted("Select a product")].spacing(12);
-        for product in self.inventory.products.values() {
+        let mut form = column![
+            heading("Create product"),
+            input("Product name", &self.name, Field::Name, enabled),
+        ]
+        .spacing(14);
+        if let Some(matches) =
+            product_matches(self.inventory.products.values(), &self.name, &self.barcode)
+        {
+            form = form.push(matches);
+        }
+        card(
+            form.push(input(
+                "Barcode (optional)",
+                &self.barcode,
+                Field::Barcode,
+                enabled,
+            ))
+            .push(input(
+                "Price in pesos (e.g. 1250.50)",
+                &self.price,
+                Field::Price,
+                enabled,
+            ))
+            .push(input(
+                "Opening quantity",
+                &self.opening,
+                Field::Opening,
+                enabled,
+            ))
+            .push(action("Create product", Message::Create, enabled)),
+        )
+    }
+
+    fn adjust_product_quantity(&self) -> Element<'_, Message> {
+        let enabled = self.editable();
+        let matches =
+            product_search::filter(self.inventory.products.values(), &self.inventory_search);
+        let mut adjust = column![
+            heading("Adjust inventory"),
+            input(
+                "Search by product name or barcode",
+                &self.inventory_search,
+                Field::InventorySearch,
+                enabled
+            ),
+            muted(format!(
+                "{} of {} products",
+                matches.len(),
+                self.inventory.products.len()
+            )),
+        ]
+        .spacing(12);
+        let mut listing = column![].spacing(8);
+        if matches.is_empty() {
+            listing = listing.push(muted(if self.inventory.products.is_empty() {
+                "No products yet. Create your first product alongside."
+            } else {
+                "No matching products. Try a different name or barcode."
+            }));
+        }
+        for product in matches {
             let quantity = self
                 .inventory
                 .quantities
                 .get(&product.id)
                 .map_or(0, |q| q.quantity);
-            adjust = adjust.push(selected(
+            listing = listing.push(selected(
                 format!(
                     "{}{} · {quantity} units",
                     if self.selected.as_ref() == Some(&product.id) {
@@ -240,6 +312,14 @@ impl App {
                 enabled,
                 self.selected.as_ref() == Some(&product.id),
             ));
+        }
+        adjust = adjust.push(scrollable(listing).height(320));
+        if let Some(product) = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.inventory.products.get(id))
+        {
+            adjust = adjust.push(inset(text(format!("Adjusting: {}", product.name))));
         }
         adjust = adjust
             .push(input(
@@ -259,10 +339,16 @@ impl App {
                 Message::Adjust,
                 enabled && self.selected.is_some(),
             ));
+        card(adjust)
+    }
+
+    fn manage(&self) -> Element<'_, Message> {
+        let create = self.create_product_form();
+        let adjust = self.adjust_product_quantity();
         if self.width > 850.0 {
-            row![create, card(adjust)].spacing(18).into()
+            row![create, adjust].spacing(18).into()
         } else {
-            column![create, card(adjust)].spacing(18).into()
+            column![create, adjust].spacing(18).into()
         }
     }
 }

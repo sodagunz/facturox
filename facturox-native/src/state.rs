@@ -15,6 +15,8 @@ pub enum Screen {
 }
 #[derive(Debug, Clone, Copy)]
 pub enum Field {
+    CatalogSearch,
+    InventorySearch,
     Name,
     Barcode,
     Price,
@@ -43,6 +45,8 @@ pub struct App {
     pub barcode: String,
     pub price: String,
     pub opening: String,
+    pub catalog_search: String,
+    pub inventory_search: String,
     pub selected: Option<String>,
     pub delta: String,
     pub reason: String,

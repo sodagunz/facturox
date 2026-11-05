@@ -10,7 +10,10 @@ workspace = true
 [dependencies]
 color-eyre = { workspace = true }
 facturox-core = { workspace = true }
+fuzzy-matcher = { workspace = true }
 iced = { workspace = true }
+strsim = { workspace = true }
+unicode-normalization = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

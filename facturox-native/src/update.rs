@@ -249,6 +249,8 @@ impl App {
                 match local {
                     Message::Edit(field, value) => {
                         *match field {
+                            Field::CatalogSearch => &mut self.catalog_search,
+                            Field::InventorySearch => &mut self.inventory_search,
                             Field::Name => &mut self.name,
                             Field::Barcode => &mut self.barcode,
                             Field::Price => &mut self.price,

@@ -23,6 +23,66 @@ fn pending() -> App {
     }
 }
 #[test]
+fn catalog_search_is_local_independent_and_preserves_the_draft() {
+    let product = Product {
+        id: "p".into(),
+        name: "Café".into(),
+        barcode: Some("001234".into()),
+        price: 100,
+    };
+    let mut app = App {
+        inventory_search: "other inventory query".into(),
+        ..App::default()
+    };
+    app.draft.add(&product).unwrap();
+    app.inventory.products.insert(product.id.clone(), product);
+    let before = app.draft.lines.clone();
+    assert_eq!(
+        app.update(Message::Edit(Field::CatalogSearch, "CAFE 001".into()))
+            .units(),
+        0
+    );
+    assert_eq!(app.catalog_search, "CAFE 001");
+    assert_eq!(app.inventory_search, "other inventory query");
+    assert_eq!(app.draft.lines, before);
+    assert_eq!(
+        crate::product_search::filter(app.inventory.products.values(), &app.catalog_search).len(),
+        1
+    );
+    assert_eq!(
+        app.update(Message::Edit(Field::CatalogSearch, "no match".into()))
+            .units(),
+        0
+    );
+    assert_eq!(
+        crate::product_search::filter(app.inventory.products.values(), &app.catalog_search),
+        Vec::<&Product>::new()
+    );
+    assert_eq!(app.draft.lines, before);
+    assert!(app.pending.is_none());
+    assert!(app.active.is_none());
+}
+
+#[test]
+fn inventory_search_is_local_and_preserves_other_editing_state() {
+    let mut app = App {
+        selected: Some("p".into()),
+        delta: "2".into(),
+        name: "Unsaved product".into(),
+        ..App::default()
+    };
+    let task = app.update(Message::Edit(Field::InventorySearch, "cafe 001".into()));
+    assert_eq!(task.units(), 0);
+    assert_eq!(app.inventory_search, "cafe 001");
+    assert_eq!(app.selected.as_deref(), Some("p"));
+    assert_eq!(app.delta, "2");
+    assert_eq!(app.name, "Unsaved product");
+    assert!(app.pending.is_none());
+    assert!(app.active.is_none());
+    assert_eq!(app.inventory.order, 0);
+}
+
+#[test]
 fn selecting_another_product_clears_the_previous_adjustment() {
     let mut app = App {
         selected: Some("first".into()),

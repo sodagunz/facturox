@@ -16,6 +16,8 @@ The native application opens one local backend and stores SQLite in the platform
 
 One Inventory aggregate owns products, quantities and closed local orders. Create products with unique trimmed names, optional unique barcodes, integer-centavo prices and optional opening quantities. Adjust quantities with signed whole-unit deltas and optional reasons. Draft adds and discard are purely local; **unfinished drafts are lost on exit**. Checkout immediately records a closed local order and deducts quantities atomically, or rejects the whole command. Captured first-add prices are validated, not silently repriced.
 
+Manage inventory supports local name/barcode search, ignoring case and accents. When creating a product, the form suggests up to five similar existing products to help spot duplicates. Suggestions are advisory; exact name and barcode uniqueness is still enforced when saving.
+
 An uncertain command result is retried once internally with the identical request. If it remains uncertain, the app shows an error and locks changes rather than risking a duplicate operation. There are no manual refresh or retry controls. After restart, inspect history before re-entering an uncertain operation: pending frontend requests are not recovered across process exit. Commands are validated against current Inventory; callers do not supply revisions. Successful writes update the affected frontend state from committed events, without reloading everything.
 
 Closed orders are **pending fiscal handling**, not payment records or authorized invoices. No ARCA integration is included. The regulatory release gates and the acknowledged total-outage compliance gap in `project-brief.md` still apply.
