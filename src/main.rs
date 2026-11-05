@@ -213,6 +213,7 @@ struct App {
     pending_order: Option<PendingOrder>,
     pending_stock: Option<PendingStock>,
     selected_stock: Option<i64>,
+    initial_quantity: String,
     stock_delta: String,
     stock_reason: String,
     busy: bool,
@@ -280,6 +281,7 @@ enum Message {
     Name(String),
     Barcode(String),
     Price(String),
+    InitialQuantity(String),
     Submit,
     Refresh,
     SelectStock(i64),
@@ -436,6 +438,7 @@ impl App {
                 self.pending_stock = None;
                 self.stock_delta.clear();
                 self.stock_reason.clear();
+                self.selected_stock = None;
                 self.notice = Some("Stock adjusted.".into());
                 self.load()
             }
@@ -526,6 +529,30 @@ impl App {
         }
     }
 
+    fn create_product(&mut self) -> Task<Message> {
+        let quantity = match self.initial_quantity.trim() {
+            "" => 0,
+            value => match value.parse::<i64>() {
+                Ok(quantity) if quantity >= 0 => quantity,
+                _ => {
+                    self.error =
+                        Some("Initial quantity must be a nonnegative whole number.".into());
+                    return Task::none();
+                }
+            },
+        };
+        self.busy = true;
+        self.error = None;
+        self.notice = None;
+        self.request = self.request.wrapping_add(1);
+        let id = self.request;
+        let draft = self.draft.clone();
+        Task::perform(
+            async move { service()?.add_with_quantity(draft, quantity).await },
+            move |result| Message::Added(id, result),
+        )
+    }
+
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Catalog => self.screen = Screen::Catalog,
@@ -560,18 +587,13 @@ impl App {
             Message::Name(value) if !self.busy => self.draft.name = value,
             Message::Barcode(value) if !self.busy => self.draft.barcode = value,
             Message::Price(value) if !self.busy => self.draft.price = value,
-            Message::Submit if self.can_modify() => {
-                self.busy = true;
-                self.error = None;
-                self.notice = None;
-                self.request = self.request.wrapping_add(1);
-                let id = self.request;
-                let draft = self.draft.clone();
-                return Task::perform(async move { service()?.add(draft).await }, move |result| {
-                    Message::Added(id, result)
-                });
+            Message::InitialQuantity(value) if !self.busy => self.initial_quantity = value,
+            Message::Submit if self.can_modify() => return self.create_product(),
+            Message::SelectStock(id) if self.can_modify() => {
+                self.selected_stock = (self.selected_stock != Some(id)).then_some(id);
+                self.stock_delta.clear();
+                self.stock_reason.clear();
             }
-            Message::SelectStock(id) if !self.busy => self.selected_stock = Some(id),
             Message::StockDelta(value) if !self.busy => self.stock_delta = value,
             Message::StockReason(value) if !self.busy => self.stock_reason = value,
             Message::AdjustStock if self.can_modify() => return self.start_stock_adjustment(),
@@ -606,14 +628,11 @@ impl App {
             Message::Added(id, result) if self.busy && id == self.request => {
                 self.busy = false;
                 match result {
-                    Ok(product) => {
-                        self.stock.push(StockBalance {
-                            product_id: product.id,
-                            quantity: 0,
-                        });
-                        self.products.push(product);
+                    Ok(_) => {
                         self.draft = Draft::default();
+                        self.initial_quantity.clear();
                         self.notice = Some("Product saved.".into());
+                        return self.load();
                     }
                     Err(error) => self.error = Some(error.to_string()),
                 }
@@ -801,34 +820,10 @@ impl App {
             text_input("Price in pesos, e.g. 12.50", &self.draft.price)
                 .on_input(Message::Price)
                 .padding(11),
+            text_input("Initial quantity (defaults to 0)", &self.initial_quantity)
+                .on_input(Message::InitialQuantity)
+                .padding(11),
             row![save, refresh].spacing(8)
-        ]
-        .spacing(10);
-        let selected = self.selected_stock.map_or_else(
-            || "Select a product below".to_owned(),
-            |id| {
-                self.products
-                    .iter()
-                    .find(|p| p.id == id)
-                    .map_or_else(|| id.to_string(), |p| p.name.clone())
-            },
-        );
-        let mut adjust = button("Apply adjustment")
-            .padding([10, 16])
-            .style(secondary_button);
-        if self.can_modify() {
-            adjust = adjust.on_press(Message::AdjustStock);
-        }
-        let stock_form = column![
-            text("Adjust stock").size(18),
-            text(selected).size(13).color(self.muted()),
-            text_input("Change in units, e.g. 5 or -2", &self.stock_delta)
-                .on_input(Message::StockDelta)
-                .padding(11),
-            text_input("Reason for adjustment", &self.stock_reason)
-                .on_input(Message::StockReason)
-                .padding(11),
-            adjust
         ]
         .spacing(10);
         let mut listing = column![
@@ -865,7 +860,7 @@ impl App {
                     .map_or_else(String::new, |b| format!("  ·  {b}"))
             );
             let mut select = button("Adjust").padding([8, 12]).style(secondary_button);
-            if !self.busy {
+            if self.can_modify() {
                 select = select.on_press(Message::SelectStock(product.id));
             }
             let info = column![
@@ -874,21 +869,35 @@ impl App {
             ]
             .spacing(4)
             .width(Fill);
+            let mut product_row =
+                column![row![info, select].spacing(8).align_y(Alignment::Center)].spacing(10);
+            if self.selected_stock == Some(product.id) {
+                let mut adjust = button("Apply adjustment")
+                    .padding([10, 16])
+                    .style(secondary_button);
+                if self.can_modify() {
+                    adjust = adjust.on_press(Message::AdjustStock);
+                }
+                product_row = product_row
+                    .push(
+                        text_input("Change in units, e.g. 5 or -2", &self.stock_delta)
+                            .on_input(Message::StockDelta)
+                            .padding(10),
+                    )
+                    .push(
+                        text_input("Reason (optional)", &self.stock_reason)
+                            .on_input(Message::StockReason)
+                            .padding(10),
+                    )
+                    .push(adjust);
+            }
             listing = listing.push(
-                container(row![info, select].spacing(8).align_y(Alignment::Center))
+                container(product_row)
                     .width(Fill)
                     .padding(14)
                     .style(inset_style),
             );
         }
-        let forms = row![
-            container(form).width(Fill).padding(20).style(card_style),
-            container(stock_form)
-                .width(Fill)
-                .padding(20)
-                .style(card_style)
-        ]
-        .spacing(16);
         let content = column![
             row![
                 column![
@@ -901,7 +910,7 @@ impl App {
                 .width(Fill)
             ]
             .align_y(Alignment::Center),
-            forms,
+            container(form).width(Fill).padding(20).style(card_style),
             container(listing).padding(20).width(Fill).style(card_style)
         ]
         .spacing(18)
@@ -1250,5 +1259,37 @@ mod tests {
             Some("test-stock")
         );
         assert!(app.error.is_some());
+    }
+    #[test]
+    fn invalid_initial_quantity_keeps_form_and_does_not_submit() {
+        let mut app = App {
+            initial_quantity: "-1".into(),
+            draft: Draft {
+                name: "Tea".into(),
+                ..Draft::default()
+            },
+            ..App::default()
+        };
+        drop(app.update(Message::Submit));
+        assert!(!app.busy);
+        assert_eq!(app.draft.name, "Tea");
+        assert_eq!(app.initial_quantity, "-1");
+        assert!(app.error.is_some());
+    }
+
+    #[test]
+    fn changing_adjustment_selection_clears_the_previous_input() {
+        let mut app = App {
+            selected_stock: Some(1),
+            stock_delta: "5".into(),
+            stock_reason: "delivery".into(),
+            ..App::default()
+        };
+        drop(app.update(Message::SelectStock(2)));
+        assert_eq!(app.selected_stock, Some(2));
+        assert_eq!(app.stock_delta, "");
+        assert_eq!(app.stock_reason, "");
+        drop(app.update(Message::SelectStock(2)));
+        assert_eq!(app.selected_stock, None);
     }
 }

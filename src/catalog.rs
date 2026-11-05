@@ -58,7 +58,11 @@ impl std::error::Error for CatalogError {
 }
 
 pub trait Catalog {
-    async fn add(&self, draft: Draft) -> Result<Product, CatalogError>;
+    async fn add_with_quantity(
+        &self,
+        draft: Draft,
+        initial_quantity: i64,
+    ) -> Result<Product, CatalogError>;
     async fn list(&self) -> Result<Vec<Product>, CatalogError>;
 }
 
@@ -119,7 +123,10 @@ impl SqliteCatalog {
         delta: i64,
         reason: &str,
     ) -> Result<i64, CatalogError> {
-        let reason = reason.trim();
+        let reason = match reason.trim() {
+            "" => "Manual adjustment",
+            reason => reason,
+        };
         if request_id.is_empty() || request_id.len() > 128 {
             return Err(CatalogError::Validation(
                 "Invalid stock adjustment request ID.".into(),
@@ -229,7 +236,16 @@ fn validate(draft: &Draft) -> Result<(String, Option<String>, i64), CatalogError
     Ok((name, barcode, cents))
 }
 impl Catalog for SqliteCatalog {
-    async fn add(&self, draft: Draft) -> Result<Product, CatalogError> {
+    async fn add_with_quantity(
+        &self,
+        draft: Draft,
+        initial_quantity: i64,
+    ) -> Result<Product, CatalogError> {
+        if initial_quantity < 0 {
+            return Err(CatalogError::Validation(
+                "Initial stock must be a nonnegative whole number.".into(),
+            ));
+        }
         let (name, barcode, price_cents) = validate(&draft)?;
         let mut conn = self.open().await?;
         let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(storage)?;
@@ -250,6 +266,9 @@ impl Catalog for SqliteCatalog {
                     }
                 })?;
         let id = result.last_insert_rowid();
+        if initial_quantity > 0 {
+            insert_stock_movement(&mut tx, id, initial_quantity, "Initial stock", None).await?;
+        }
         tx.commit().await.map_err(storage)?;
         Ok(Product {
             id,
@@ -294,15 +313,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initial_stock_is_saved_atomically_with_product() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = SqliteCatalog::at(dir.path().join("catalog.sqlite3"));
+        let draft = Draft {
+            name: "Tea".into(),
+            barcode: String::new(),
+            price: "2".into(),
+        };
+        assert!(matches!(
+            service.add_with_quantity(draft.clone(), -1).await,
+            Err(CatalogError::Validation(_))
+        ));
+        assert_eq!(service.list().await.unwrap(), []);
+        let mut conn = service.open().await.unwrap();
+        sqlx::query("CREATE TRIGGER reject_initial_stock BEFORE INSERT ON stock_movements BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+            .execute(&mut conn).await.unwrap();
+        assert!(service.add_with_quantity(draft.clone(), 5).await.is_err());
+        assert_eq!(service.list().await.unwrap(), []);
+        sqlx::query("DROP TRIGGER reject_initial_stock")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        drop(conn);
+        let product = service.add_with_quantity(draft, 5).await.unwrap();
+        let reopened = SqliteCatalog::at(dir.path().join("catalog.sqlite3"));
+        assert_eq!(
+            reopened.list_stock().await.unwrap(),
+            vec![StockBalance {
+                product_id: product.id,
+                quantity: 5
+            }]
+        );
+        let mut conn = reopened.open().await.unwrap();
+        let movements: Vec<(i64, String)> =
+            sqlx::query_as("SELECT delta, reason FROM stock_movements WHERE product_id = ?1")
+                .bind(product.id)
+                .fetch_all(&mut conn)
+                .await
+                .unwrap();
+        assert_eq!(movements, vec![(5, "Initial stock".into())]);
+    }
+
+    #[tokio::test]
+    async fn empty_adjustment_reason_is_recorded_and_replay_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = SqliteCatalog::at(dir.path().join("catalog.sqlite3"));
+        let product = service
+            .add_with_quantity(
+                Draft {
+                    name: "Coffee".into(),
+                    barcode: String::new(),
+                    price: "1".into(),
+                },
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .adjust_stock_once("request", product.id, 3, " ")
+                .await
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            service
+                .adjust_stock_once("request", product.id, 3, "")
+                .await
+                .unwrap(),
+            3
+        );
+        let mut conn = service.open().await.unwrap();
+        let movements: Vec<(i64, String)> =
+            sqlx::query_as("SELECT delta, reason FROM stock_movements WHERE product_id = ?1")
+                .bind(product.id)
+                .fetch_all(&mut conn)
+                .await
+                .unwrap();
+        assert_eq!(movements, vec![(3, "Manual adjustment".into())]);
+    }
+
+    #[tokio::test]
     async fn stock_adjustment_replay_is_atomic_and_rejects_reused_ids() {
         let dir = tempfile::tempdir().unwrap();
         let service = SqliteCatalog::at(dir.path().join("catalog.sqlite3"));
         let product = service
-            .add(Draft {
-                name: "Tea".into(),
-                barcode: String::new(),
-                price: "1".into(),
-            })
+            .add_with_quantity(
+                Draft {
+                    name: "Tea".into(),
+                    barcode: String::new(),
+                    price: "1".into(),
+                },
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -369,11 +473,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let service = SqliteCatalog::at(dir.path().join("catalog.sqlite3"));
         let product = service
-            .add(Draft {
-                name: "Coffee".into(),
-                barcode: String::new(),
-                price: "1".into(),
-            })
+            .add_with_quantity(
+                Draft {
+                    name: "Coffee".into(),
+                    barcode: String::new(),
+                    price: "1".into(),
+                },
+                0,
+            )
             .await
             .unwrap();
         service
@@ -402,19 +509,22 @@ mod tests {
             barcode: " 123 ".into(),
             price: "12.3".into(),
         };
-        let saved = service.add(draft.clone()).await.unwrap();
+        let saved = service.add_with_quantity(draft.clone(), 0).await.unwrap();
         assert_eq!(saved.price_cents, 1230);
         assert!(matches!(
-            service.add(draft).await,
+            service.add_with_quantity(draft, 0).await,
             Err(CatalogError::DuplicateBarcode)
         ));
         assert!(matches!(
             service
-                .add(Draft {
-                    name: "Invalid".into(),
-                    barcode: String::new(),
-                    price: "1.001".into()
-                })
+                .add_with_quantity(
+                    Draft {
+                        name: "Invalid".into(),
+                        barcode: String::new(),
+                        price: "1.001".into()
+                    },
+                    0
+                )
                 .await,
             Err(CatalogError::Validation(_))
         ));

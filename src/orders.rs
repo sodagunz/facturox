@@ -384,11 +384,14 @@ mod tests {
 
     async fn product(service: &SqliteCatalog, name: &str, price: &str, stock: i64) -> i64 {
         let product = service
-            .add(Draft {
-                name: name.into(),
-                barcode: String::new(),
-                price: price.into(),
-            })
+            .add_with_quantity(
+                Draft {
+                    name: name.into(),
+                    barcode: String::new(),
+                    price: price.into(),
+                },
+                0,
+            )
             .await
             .unwrap();
         if stock > 0 {
