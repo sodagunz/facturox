@@ -1,4 +1,6 @@
-use std::{fmt, path::PathBuf};
+use std::{fmt, path::PathBuf, sync::Arc};
+
+use color_eyre::eyre::{Report, eyre};
 
 use directories::ProjectDirs;
 use sqlx::{Connection, Row, SqliteConnection};
@@ -24,17 +26,33 @@ pub struct Draft {
     pub price: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum CatalogError {
     Validation(String),
     DuplicateBarcode,
-    Storage(String),
+    Storage(Arc<Report>),
 }
 impl fmt::Display for CatalogError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Validation(message) | Self::Storage(message) => f.write_str(message),
+            Self::Validation(message) => f.write_str(message),
+            Self::Storage(report) => write!(f, "Catalog storage error: {report:#}"),
             Self::DuplicateBarcode => f.write_str("This barcode is already in use."),
+        }
+    }
+}
+
+impl CatalogError {
+    pub(crate) fn storage_message(message: &'static str) -> Self {
+        Self::Storage(Arc::new(eyre!(message)))
+    }
+}
+
+impl std::error::Error for CatalogError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Storage(report) => Some(report.as_ref().as_ref()),
+            _ => None,
         }
     }
 }
@@ -56,7 +74,7 @@ impl SqliteCatalog {
     pub fn default_path() -> Result<PathBuf, CatalogError> {
         ProjectDirs::from("", "", "facturox")
             .map(|dirs| dirs.data_dir().join("catalog.sqlite3"))
-            .ok_or_else(|| CatalogError::Storage("Could not find the user data directory.".into()))
+            .ok_or_else(|| CatalogError::storage_message("Could not find the user data directory."))
     }
 
     pub(crate) async fn open(&self) -> Result<SqliteConnection, CatalogError> {
@@ -128,8 +146,8 @@ impl SqliteCatalog {
     }
 }
 
-pub(crate) fn storage(error: impl fmt::Display) -> CatalogError {
-    CatalogError::Storage(format!("Catalog storage error: {error}"))
+pub(crate) fn storage(error: impl Into<Report>) -> CatalogError {
+    CatalogError::Storage(Arc::new(error.into()))
 }
 
 /// Applies a movement inside a transaction that already holds the SQLite write lock.
@@ -262,6 +280,19 @@ impl Catalog for SqliteCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_errors_preserve_the_underlying_cause() {
+        use std::error::Error;
+        let error = storage(std::io::Error::other("simulated disk failure"));
+        assert!(error.to_string().contains("simulated disk failure"));
+        assert!(
+            error
+                .source()
+                .is_some_and(|source| source.to_string().contains("simulated disk failure"))
+        );
+    }
+
     #[tokio::test]
     async fn stock_adjustment_replay_is_atomic_and_rejects_reused_ids() {
         let dir = tempfile::tempdir().unwrap();
@@ -373,10 +404,10 @@ mod tests {
         };
         let saved = service.add(draft.clone()).await.unwrap();
         assert_eq!(saved.price_cents, 1230);
-        assert_eq!(
+        assert!(matches!(
             service.add(draft).await,
             Err(CatalogError::DuplicateBarcode)
-        );
+        ));
         assert!(matches!(
             service
                 .add(Draft {

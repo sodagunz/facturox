@@ -2,14 +2,16 @@
 name = "einvoice"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
-directories = "=6.0.0"
-iced = { version = "=0.14.0", features = ["tokio"] }
-sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "sqlite-bundled"] }
-tokio = { version = "=1.53.3", features = ["fs"] }
-uuid = { version = "=1.29.0", features = ["v4"] }
+color-eyre = "0.6"
+directories = "6"
+iced = { version = "0.14", features = ["tokio"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite-bundled"] }
+tokio = { version = "1", features = ["fs"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-tempfile = "=3.27.0"
-tokio = { version = "=1.53.3", features = ["macros", "rt"] }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt"] }

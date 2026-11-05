@@ -9,7 +9,8 @@ use iced::{Alignment, Border, Color, Element, Fill, Subscription, Task, Theme, k
 use orders::{Order, OrderStatus};
 use settings::{CompanyDetails, ThemePreference};
 
-fn main() -> iced::Result {
+fn main() -> color_eyre::Result<()> {
+    color_eyre::install()?;
     iced::application(App::boot, App::update, App::view)
         .title("Facturox")
         .theme(|app: &App| {
@@ -20,7 +21,8 @@ fn main() -> iced::Result {
             }
         })
         .subscription(|_| App::subscription())
-        .run()
+        .run()?;
+    Ok(())
 }
 
 const MUTED: Color = Color::from_rgb8(100, 106, 116);
@@ -1139,7 +1141,7 @@ mod tests {
         };
         drop(app.update(Message::OrderCompleted(
             7,
-            Err(CatalogError::Storage("connection lost".into())),
+            Err(CatalogError::storage_message("connection lost")),
         )));
         assert!(!app.busy);
         assert!(!app.can_modify());
@@ -1165,7 +1167,7 @@ mod tests {
         };
         drop(app.update(Message::StockAdjusted(
             9,
-            Err(CatalogError::Storage("connection lost".into())),
+            Err(CatalogError::storage_message("connection lost")),
         )));
         assert!(!app.busy);
         assert!(!app.can_modify());
