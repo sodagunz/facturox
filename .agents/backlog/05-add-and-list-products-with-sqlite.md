@@ -2,7 +2,7 @@
 
 Add a product through Iced, list it and recover it after restarting the application.
 
-Status: planned.
+Status: implementation in review; validation pending.
 Dependencies: 02, 03, 04.
 
 ## Execution contract
@@ -30,4 +30,4 @@ Execute only this ticket once implementation is requested. Record validation res
 
 ## Completion evidence
 
-Pending implementation.
+Linux: `cargo fmt --all`, strict pedantic Clippy and `cargo test --locked` passed. Five tests include real SQLite reopen, duplicate/invalid input, unsupported schema and child-process termination before/after commit. The app stayed running in an isolated Linux launch smoke check; interactive add/restart was not verified. Windows/macOS builds and GUI smoke tests are pending. Disk-full behavior and backup/restore have not been verified. Keep this ticket in backlog until the remaining acceptance checks are complete.
