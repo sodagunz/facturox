@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE inventory_events SET \"order\"=2, payload=? WHERE \"order\"=3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "222ed6a95a22cca7c02d709bc73da3662ef342441c9a496dcde6b7406d3bc953"
+}

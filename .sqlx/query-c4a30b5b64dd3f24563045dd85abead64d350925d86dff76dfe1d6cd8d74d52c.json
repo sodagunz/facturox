@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE inventory_events SET occurred_at=0 WHERE \"order\"=3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "c4a30b5b64dd3f24563045dd85abead64d350925d86dff76dfe1d6cd8d74d52c"
+}

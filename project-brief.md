@@ -253,3 +253,8 @@ Rehearse process crash, printer unplugging, duplicate clicks, interrupted ARCA r
 ## 12. First prompt for Codex
 
 > Read `project-brief.md` and `AGENTS.md` in full. We are discussing architecture; **do not generate the entire application or choose the UI**. Respect the settled decisions: standalone local Rust desktop app, one computer, SQLite, pinned nightly + devenv, GitHub Actions **build-only** for Linux x86-64 / macOS ARM64 / Windows x86-64, no server or deployment, no CAEA. Propose only a **minimal domain and persistence boundary** for catalog/stock/sales/Factura C, keeping services modular through capability traits when useful without prebuilding remote backends. Highlight transaction invariants, ARCA unknown-outcome recovery, RG 3685 implementation verification, backup/restore, and the acknowledged outage compliance gap. Ask before committing to a new architectural direction.
+
+
+### Add search when entering a new product (to verify it does not repeat anotherone by name when barcode not available)
+### Termal printer is Hprt TP 585 POS.
+### Barcode scanner tbd.

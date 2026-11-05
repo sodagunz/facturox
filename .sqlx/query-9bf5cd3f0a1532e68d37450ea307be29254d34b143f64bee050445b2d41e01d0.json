@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO inventory_commands(id,request,receipt) VALUES(?,?,?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "9bf5cd3f0a1532e68d37450ea307be29254d34b143f64bee050445b2d41e01d0"
+}

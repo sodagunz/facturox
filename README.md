@@ -1,17 +1,25 @@
 # Argentina Grocery POS
 
-The project is in early development. The application is not ready for checkout or invoicing.
+Early development: not ready for real checkout or invoicing.
 
-Install [devenv](https://devenv.sh/) and run `devenv shell`. The shell reads `rust-toolchain.toml` and supplies the pinned Rust nightly, rustfmt and Clippy. Run `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`, and `cargo test --locked` inside the shell.
+Install [devenv](https://devenv.sh/) and enter `devenv shell`. The shell supplies the pinned Rust nightly, rustfmt and Clippy.
 
-CI builds on Linux x86-64, Windows x86-64 and macOS ARM64 using native runners. Build artifacts are unsigned executables. Compilation does not verify graphics or hardware; launch and exercise the app on each operating system before release. Development and initial smoke testing happen on Linux; test Windows and macOS natively when hardware is available. Cross-compilation is not required for CI.
+```sh
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build -p facturox-native
+cargo deny --locked check advisories licenses sources
+```
 
-Run `cargo deny --locked check advisories licenses sources` inside the devenv shell to check dependency advisories, licenses and sources. CI runs the same checks. Review any proposed advisory or license exception individually, record its reason and remove it when no longer needed; never suppress an entire class of findings.
+The native application opens one local backend and stores SQLite in the platform data directory under `facturox/db.sqlite`. Keep it on a local filesystem. A verified encrypted off-machine backup and restore procedure is required before production.
 
-The catalog stores its SQLite database in the current user's platform data directory under `facturox/catalog.sqlite3` (on Linux, normally `$XDG_DATA_HOME/facturox` or `~/.local/share/facturox`). The catalog is an early development slice, not a checkout or invoicing system. Keep the database on a local filesystem. A live SQLite database can have WAL files: do not copy just the database file while the application is running. A verified encrypted off-machine backup and restore procedure is required before production use.
+One Inventory aggregate owns products, quantities and closed local orders. Create products with unique trimmed names, optional unique barcodes, integer-centavo prices and optional opening quantities. Adjust quantities with signed whole-unit deltas and optional reasons. Draft adds and discard are purely local; **unfinished drafts are lost on exit**. Checkout immediately records a closed local order and deducts quantities atomically, or rejects the whole command. Captured first-add prices are validated, not silently repriced.
 
-The catalog rejects duplicate nonempty barcodes and stores prices as integer centavos. If the application stops after saving but before confirming the result, check the catalog before retrying. Disk-full and permission failures must be tested on isolated disposable storage; a failed save must be shown as an error. The automated recovery test kills a separate process around a SQLite commit, but does not simulate hardware failure or prove that a backup can be restored.
+An uncertain command result is retried once internally with the identical request. If it remains uncertain, the app shows an error and locks changes rather than risking a duplicate operation. There are no manual refresh or retry controls. After restart, inspect history before re-entering an uncertain operation: pending frontend requests are not recovered across process exit. Commands are validated against current Inventory; callers do not supply revisions. Successful writes update the affected frontend state from committed events, without reloading everything.
 
-Stock and orders are an experimental local workflow. Set the initial whole-unit quantity when creating a product, or leave it empty for zero. Select a product in Manage inventory to record a signed stock adjustment; the reason is optional. Adding an item to an open order immediately reserves one unit. Removing it or cancelling the order restores the reserved units; closing retains the reservation and records the order in the log as pending fiscal handling. The order log is not an invoice or payment record. After a restart, inspect the open order and log before repeating an action whose result was uncertain.
+Closed orders are **pending fiscal handling**, not payment records or authorized invoices. No ARCA integration is included. The regulatory release gates and the acknowledged total-outage compliance gap in `project-brief.md` still apply.
 
-During development, SQLite schema is initialized from `src/schema.sql` without versioned migrations. Schema changes may require recreating the local development database; back up anything you want to keep first. Design and test a migration path before production use.
+The rewritten initial migration is incompatible with the preceding prototype schema; the app never deletes an incompatible database. See [database development](docs/database.md) for reset precautions, recovery limitations and SQLx metadata preparation. See [Inventory design](docs/catalog-design.md) for boundaries and price/retry policies.
+
+CI builds unsigned artifacts on Linux x86-64, Windows x86-64 and macOS ARM64. Compilation does not verify graphics or hardware; exercise the application on each platform before release. CI builds and checks only; it does not deploy a service.

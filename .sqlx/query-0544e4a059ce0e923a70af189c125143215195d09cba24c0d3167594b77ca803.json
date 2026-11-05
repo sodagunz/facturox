@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE app_settings SET business_name=?, tax_identifier=?, address=?, contact=? WHERE id=1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "0544e4a059ce0e923a70af189c125143215195d09cba24c0d3167594b77ca803"
+}

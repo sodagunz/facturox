@@ -1,14 +1,43 @@
 name: CI
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install project toolchain
+        run: rustup show
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install project toolchain
+        run: rustup show
+      - name: Check workspace lints
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
   build:
+    env:
+      SQLX_OFFLINE: "true"
     strategy:
       fail-fast: false
       matrix:
@@ -24,25 +53,41 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Verify host target
         shell: bash
-        run: rustc -vV | grep -Fx 'host: ${{ matrix.target }}'
+        run: |
+          rustc -vV | grep -Fx 'host: ${{ matrix.target }}'
       - name: Install project toolchain
         shell: bash
         run: rustup show
-      - name: Format
-        run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --locked --all-targets -- -D warnings -D clippy::pedantic
       - name: Test
-        run: cargo test --locked
+        run: cargo test --locked --workspace
       - name: Build
-        run: cargo build --locked --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --package facturox-native --bin facturox-native --target ${{ matrix.target }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: einvoice-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/einvoice${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          name: facturox-native-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/facturox-native${{ matrix.os == 'windows-latest' && '.exe' || '' }}
           if-no-files-found: error
 
-  security:
+  sqlx:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: sqlite://target/sqlx-schema.sqlite3
+      SQLX_OFFLINE: "false"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install project toolchain
+        run: rustup show
+      - name: Install SQLx CLI
+        run: cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features sqlite
+      - name: Create schema database from migrations
+        run: |
+          mkdir -p target
+          cargo sqlx database setup --source facturox-core/migrations
+      - name: Check query metadata against migrations
+        run: cargo sqlx prepare --check --workspace -- --all-targets
+
+  deny:
+    name: deny
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

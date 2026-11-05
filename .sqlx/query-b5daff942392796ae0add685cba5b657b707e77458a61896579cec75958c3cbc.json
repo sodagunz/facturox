@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) AS \"occurred_at!: i64\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "occurred_at!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "b5daff942392796ae0add685cba5b657b707e77458a61896579cec75958c3cbc"
+}

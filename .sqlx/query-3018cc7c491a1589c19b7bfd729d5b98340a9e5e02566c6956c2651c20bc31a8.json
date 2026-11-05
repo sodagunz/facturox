@@ -1,0 +1,57 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT \"order\", json(payload) AS \"payload!: String\", occurred_at, operation_id FROM inventory_events ORDER BY \"order\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "order",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "inventory_events",
+            "name": "order"
+          }
+        }
+      },
+      {
+        "name": "payload!: String",
+        "ordinal": 1,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "occurred_at",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "inventory_events",
+            "name": "occurred_at"
+          }
+        }
+      },
+      {
+        "name": "operation_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inventory_events",
+            "name": "operation_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "3018cc7c491a1589c19b7bfd729d5b98340a9e5e02566c6956c2651c20bc31a8"
+}
