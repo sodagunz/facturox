@@ -79,7 +79,7 @@ impl SqliteCatalog {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(storage)?;
-        if version > 2 {
+        if version > 3 {
             return Err(CatalogError::Storage(format!(
                 "Unsupported catalog schema version {version}."
             )));
@@ -88,7 +88,7 @@ impl SqliteCatalog {
             .map_err(storage)?;
         conn.pragma_update(None, "synchronous", "FULL")
             .map_err(storage)?;
-        if version < 2 {
+        if version < 3 {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(storage)?;
@@ -96,7 +96,7 @@ impl SqliteCatalog {
             let current: i64 = tx
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .map_err(storage)?;
-            if current > 2 {
+            if current > 3 {
                 return Err(CatalogError::Storage(format!(
                     "Unsupported catalog schema version {current}."
                 )));
@@ -106,6 +106,10 @@ impl SqliteCatalog {
             }
             if current <= 1 {
                 tx.execute_batch("CREATE TABLE stock_movements (id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL REFERENCES products(id), delta INTEGER NOT NULL CHECK(delta <> 0), reason TEXT NOT NULL CHECK(length(trim(reason)) > 0), order_id INTEGER, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))); CREATE INDEX stock_movements_product ON stock_movements(product_id); PRAGMA user_version = 2;").map_err(storage)?;
+            }
+            if current <= 2 {
+                crate::orders::migrate_v3(&tx)?;
+                migrate_stock_v3(&tx)?;
             }
             tx.commit().map_err(storage)?;
         }
@@ -127,7 +131,8 @@ impl SqliteCatalog {
         rows.collect::<Result<Vec<_>, _>>().map_err(storage)
     }
 
-    /// Records a manual adjustment atomically and returns the new available quantity.
+    /// Records a manual adjustment for test fixtures.
+    #[cfg(test)]
     pub fn adjust_stock(
         &self,
         product_id: i64,
@@ -142,6 +147,62 @@ impl SqliteCatalog {
         tx.commit().map_err(storage)?;
         Ok(quantity)
     }
+
+    /// Records a manual adjustment once for a stable caller-generated request ID.
+    /// Replays return the quantity recorded by the first successful request.
+    pub fn adjust_stock_once(
+        &self,
+        request_id: &str,
+        product_id: i64,
+        delta: i64,
+        reason: &str,
+    ) -> Result<i64, CatalogError> {
+        let reason = reason.trim();
+        if request_id.is_empty() || request_id.len() > 128 {
+            return Err(CatalogError::Validation(
+                "Invalid stock adjustment request ID.".into(),
+            ));
+        }
+        let mut conn = self.open()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let existing: Option<(i64, i64, String, i64)> = tx.query_row(
+            "SELECT product_id, delta, reason, result_quantity FROM stock_adjustment_commands WHERE request_id = ?1",
+            [request_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).optional().map_err(storage)?;
+        if let Some((saved_product, saved_delta, saved_reason, quantity)) = existing {
+            if (saved_product, saved_delta, saved_reason.as_str()) != (product_id, delta, reason) {
+                return Err(CatalogError::Validation(
+                    "Stock adjustment request ID was already used for a different adjustment."
+                        .into(),
+                ));
+            }
+            return Ok(quantity);
+        }
+        let quantity = insert_stock_movement(&tx, product_id, delta, reason, None)?;
+        tx.execute(
+            "INSERT INTO stock_adjustment_commands (request_id, product_id, delta, reason, result_quantity) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![request_id, product_id, delta, reason, quantity],
+        ).map_err(storage)?;
+        tx.commit().map_err(storage)?;
+        Ok(quantity)
+    }
+}
+
+/// Add the replay ledger inside the shared version 3 migration transaction.
+pub(crate) fn migrate_stock_v3(tx: &Transaction<'_>) -> Result<(), CatalogError> {
+    tx.execute_batch(
+        "CREATE TABLE stock_adjustment_commands (
+            request_id TEXT PRIMARY KEY NOT NULL,
+            product_id INTEGER NOT NULL REFERENCES products(id),
+            delta INTEGER NOT NULL CHECK(delta <> 0),
+            reason TEXT NOT NULL CHECK(length(trim(reason)) > 0),
+            result_quantity INTEGER NOT NULL CHECK(result_quantity >= 0)
+        );",
+    )
+    .map_err(storage)
 }
 pub(crate) fn storage(error: impl fmt::Display) -> CatalogError {
     CatalogError::Storage(format!("Catalog storage error: {error}"))
@@ -279,6 +340,69 @@ impl Catalog for SqliteCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stock_adjustment_replay_is_atomic_and_rejects_reused_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = SqliteCatalog::at(dir.path().join("catalog.sqlite3"));
+        let product = service
+            .add(Draft {
+                name: "Tea".into(),
+                barcode: String::new(),
+                price: "1".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            service
+                .adjust_stock_once("request-1", product.id, 3, "received")
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            service
+                .adjust_stock_once("request-2", product.id, -1, "damaged")
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            service
+                .adjust_stock_once("request-1", product.id, 3, "received")
+                .unwrap(),
+            3
+        );
+        assert!(
+            service
+                .adjust_stock_once("request-1", product.id, 4, "received")
+                .is_err()
+        );
+        assert!(
+            service
+                .adjust_stock_once("request-1", product.id, 3, "different reason")
+                .is_err()
+        );
+        assert!(
+            service
+                .adjust_stock_once("", product.id, 3, "received")
+                .is_err()
+        );
+        assert!(
+            service
+                .adjust_stock_once("request-3", product.id, -3, "too many")
+                .is_err()
+        );
+        assert_eq!(service.list_stock().unwrap()[0].quantity, 2);
+        let conn = service.open().unwrap();
+        let movement_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM stock_movements", [], |row| row.get(0))
+            .unwrap();
+        let request_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM stock_adjustment_commands",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!((movement_count, request_count), (2, 2));
+    }
     #[test]
     fn migrates_existing_catalog_and_tracks_checked_adjustments() {
         let dir = tempfile::tempdir().unwrap();
